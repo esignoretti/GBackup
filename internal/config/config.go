@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,33 +71,37 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) Validate() error {
+	var errs []error
 	if c.Workspace.Domain == "" {
-		return fmt.Errorf("workspace.domain is required")
+		errs = append(errs, fmt.Errorf("workspace.domain is required"))
 	}
 	if c.Workspace.AdminEmail == "" {
-		return fmt.Errorf("workspace.admin_email is required")
+		errs = append(errs, fmt.Errorf("workspace.admin_email is required"))
 	}
 	if c.Storage.Bucket == "" {
-		return fmt.Errorf("storage.bucket is required")
+		errs = append(errs, fmt.Errorf("storage.bucket is required"))
 	}
 	if c.Storage.Region == "" {
-		return fmt.Errorf("storage.region is required")
+		errs = append(errs, fmt.Errorf("storage.region is required"))
 	}
 	if c.Storage.AccessKeyID == "" {
-		return fmt.Errorf("storage.access_key_id is required")
+		errs = append(errs, fmt.Errorf("storage.access_key_id is required"))
 	}
 	if c.Storage.SecretAccessKey == "" {
-		return fmt.Errorf("storage.secret_access_key is required")
+		errs = append(errs, fmt.Errorf("storage.secret_access_key is required"))
 	}
 	if len(c.Services) == 0 {
-		return fmt.Errorf("services: at least one service required")
+		errs = append(errs, fmt.Errorf("services: at least one service required"))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func Save(path string, cfg *Config) error {
 	if path == "" {
 		path = defaultConfigPath()
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
