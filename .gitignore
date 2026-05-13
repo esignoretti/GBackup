@@ -4,3 +4,4 @@ bin/
 .gbackup/
 .env
 .worktrees/
+.DS_Store
