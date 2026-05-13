@@ -10,10 +10,11 @@ import (
 var cfgFile string
 
 var rootCmd = &cobra.Command{
-	Use:   "gbackup",
-	Short: "Google Workspace backup to S3-compatible storage",
-	Long: `GBackup backs up Google Workspace (Drive, Gmail, Calendar, Contacts)
-to any S3-compatible storage provider.`,
+	Use:           "gbackup",
+	Short:         "Google Workspace backup to S3-compatible storage",
+	Long:          `GBackup backs up Google Workspace (Drive, Gmail, Calendar, Contacts) to any S3-compatible storage provider.`,
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
 func Execute() {
