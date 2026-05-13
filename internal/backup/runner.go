@@ -91,7 +91,20 @@ func (r *Runner) runService(ctx context.Context, service string, full bool) erro
 			}
 		}
 	case "gmail":
-		return fmt.Errorf("%s backup not yet implemented", service)
+		gcfg := &GmailBackupConfig{
+			ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
+			AdminEmail:         r.cfg.DirAuth.AdminEmail,
+		}
+		gb, err := NewGmailBackup(gcfg)
+		if err != nil {
+			return err
+		}
+		gb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
+		for _, user := range users {
+			if _, err := gb.BackupUser(ctx, user, full); err != nil {
+				return fmt.Errorf("gmail backup for %s: %w", user, err)
+			}
+		}
 	}
 	return nil
 }
