@@ -64,7 +64,7 @@ func TestIsModified(t *testing.T) {
 	db.TrackItem(item)
 
 	// Same checksum — not modified
-	modified, err := db.IsModified("drive", "u@t.com", "x1", "oldhash", time.Now())
+	modified, err := db.IsModified("drive", "u@t.com", "x1", "oldhash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestIsModified(t *testing.T) {
 	}
 
 	// Different checksum — modified
-	modified, err = db.IsModified("drive", "u@t.com", "x1", "newhash", time.Now())
+	modified, err = db.IsModified("drive", "u@t.com", "x1", "newhash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestIsModified(t *testing.T) {
 	}
 
 	// Unknown item — always modified
-	modified, err = db.IsModified("drive", "u@t.com", "unknown_id", "hash", time.Now())
+	modified, err = db.IsModified("drive", "u@t.com", "unknown_id", "hash")
 	if err != nil {
 		t.Fatal(err)
 	}

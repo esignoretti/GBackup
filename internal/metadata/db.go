@@ -91,7 +91,7 @@ func (d *DB) GetItem(service, user, itemID string) (*Item, error) {
 	return item, nil
 }
 
-func (d *DB) IsModified(service, user, itemID, checksum string, modifiedAt time.Time) (bool, error) {
+func (d *DB) IsModified(service, user, itemID, checksum string) (bool, error) {
 	existing, err := d.GetItem(service, user, itemID)
 	if err == sql.ErrNoRows {
 		return true, nil
@@ -116,7 +116,7 @@ func (d *DB) LastBackupTime(service, user string) (time.Time, error) {
 	if !s.Valid || s.String == "" {
 		return time.Time{}, sql.ErrNoRows
 	}
-	t, err := time.Parse("2006-01-02 15:04:05.999999-07:00", s.String)
+	t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", s.String)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -151,6 +151,9 @@ func (d *DB) ItemsByService(service, user string) ([]*Item, error) {
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -168,10 +171,13 @@ func BackupDB(sourcePath, destPath string) error {
 	defer dst.Close()
 
 	gw := gzip.NewWriter(dst)
-	defer gw.Close()
 
 	_, err = io.Copy(gw, src)
-	return err
+	if err != nil {
+		gw.Close()
+		return err
+	}
+	return gw.Close()
 }
 
 func RestoreDB(sourcePath, destPath string) error {
