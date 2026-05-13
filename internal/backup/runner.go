@@ -60,7 +60,22 @@ func (r *Runner) runService(ctx context.Context, service string, full bool) erro
 				return fmt.Errorf("drive backup for %s: %w", user, err)
 			}
 		}
-	case "gmail", "calendar", "contacts":
+	case "contacts":
+		cbCfg := &ContactsBackupConfig{
+			ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
+			AdminEmail:         r.cfg.DirAuth.AdminEmail,
+		}
+		cb, err := NewContactsBackup(cbCfg)
+		if err != nil {
+			return err
+		}
+		cb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
+		for _, user := range users {
+			if _, err := cb.BackupUser(ctx, user, full); err != nil {
+				return fmt.Errorf("contacts backup for %s: %w", user, err)
+			}
+		}
+	case "gmail", "calendar":
 		return fmt.Errorf("%s backup not yet implemented", service)
 	}
 	return nil
