@@ -19,6 +19,7 @@ func TestLoadConfigFromPath(t *testing.T) {
 workspace:
   domain: "test.com"
   admin_email: "admin@test.com"
+  service_account_file: "/path/to/key.json"
 storage:
   bucket: "test-bucket"
   region: "us-east-1"
@@ -48,7 +49,7 @@ services:
 
 func TestConfigValidateMissingBucket(t *testing.T) {
 	cfg := &Config{
-		Workspace: WorkspaceConfig{Domain: "d", AdminEmail: "a@d"},
+		Workspace: WorkspaceConfig{Domain: "d", AdminEmail: "a@d", ServiceAccountFile: "/k.json"},
 		Storage:   StorageConfig{Region: "us-east-1"},
 	}
 	err := cfg.Validate()
@@ -61,7 +62,7 @@ func TestSaveConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.yaml")
 	cfg := &Config{
-		Workspace: WorkspaceConfig{Domain: "test.com", AdminEmail: "admin@test.com"},
+		Workspace: WorkspaceConfig{Domain: "test.com", AdminEmail: "admin@test.com", ServiceAccountFile: "/k.json"},
 		Storage: StorageConfig{
 			Bucket:          "b",
 			Region:          "us-east-1",

@@ -20,6 +20,9 @@ var initCmd = &cobra.Command{
 		fmt.Print("Admin email: ")
 		fmt.Scanln(&cfg.Workspace.AdminEmail)
 
+		fmt.Print("Path to Google service account JSON key file: ")
+		fmt.Scanln(&cfg.Workspace.ServiceAccountFile)
+
 		fmt.Print("S3 bucket name: ")
 		fmt.Scanln(&cfg.Storage.Bucket)
 

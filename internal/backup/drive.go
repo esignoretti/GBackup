@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -144,11 +145,9 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			gw := gzip.NewWriter(&buf)
 			_, copyErr := io.Copy(gw, content)
 			content.Close()
-			if closeErr := gw.Close(); closeErr != nil {
-				return count, fmt.Errorf("gzip close: %w", closeErr)
-			}
-			if copyErr != nil {
-				return count, fmt.Errorf("gzip copy: %w", copyErr)
+			closeErr := gw.Close()
+			if err := errors.Join(copyErr, closeErr); err != nil {
+				return count, fmt.Errorf("compression failed: %w", err)
 			}
 
 			if err := d.store.Upload(ctx, objKey, &buf); err != nil {

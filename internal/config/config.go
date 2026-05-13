@@ -18,8 +18,9 @@ type Config struct {
 }
 
 type WorkspaceConfig struct {
-	Domain     string `yaml:"domain"`
-	AdminEmail string `yaml:"admin_email"`
+	Domain            string `yaml:"domain"`
+	AdminEmail        string `yaml:"admin_email"`
+	ServiceAccountFile string `yaml:"service_account_file"`
 }
 
 type StorageConfig struct {
@@ -77,6 +78,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Workspace.AdminEmail == "" {
 		errs = append(errs, fmt.Errorf("workspace.admin_email is required"))
+	}
+	if c.Workspace.ServiceAccountFile == "" {
+		errs = append(errs, fmt.Errorf("workspace.service_account_file is required"))
 	}
 	if c.Storage.Bucket == "" {
 		errs = append(errs, fmt.Errorf("storage.bucket is required"))

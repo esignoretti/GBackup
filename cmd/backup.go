@@ -46,7 +46,7 @@ var backupCmd = &cobra.Command{
 			Store:  store,
 			MetaDB: db,
 			DirAuth: &gws.AuthConfig{
-				ServiceAccountFile: cfg.Workspace.AdminEmail + ".json",
+				ServiceAccountFile: cfg.Workspace.ServiceAccountFile,
 				AdminEmail:         cfg.Workspace.AdminEmail,
 			},
 		})
