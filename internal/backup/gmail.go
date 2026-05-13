@@ -12,7 +12,6 @@ import (
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -140,9 +139,5 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 }
 
 func isGmailPreconditionFailed(err error) bool {
-	apiErr, ok := err.(*googleapi.Error)
-	if !ok {
-		return false
-	}
-	return apiErr.Code == 400 && strings.Contains(apiErr.Message, "failedPrecondition")
+	return strings.Contains(err.Error(), "failedPrecondition")
 }
