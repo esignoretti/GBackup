@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/esignoretti/gbackup/internal/config"
@@ -19,7 +21,8 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("loading config: %w", err)
 		}
 
-		dbPath := os.Getenv("HOME") + "/.gbackup/meta.db"
+		home, _ := os.UserHomeDir()
+		dbPath := filepath.Join(home, ".gbackup", "meta.db")
 		db, err := metadata.New(dbPath)
 		if err != nil {
 			return fmt.Errorf("opening metadata: %w", err)
@@ -51,7 +54,11 @@ func resolveStatusUsers(cfg *config.Config) []string {
 	if cfg.Users.Include == "*" {
 		return []string{cfg.Workspace.AdminEmail}
 	}
-	return cfg.Users.Exclude
+	parts := strings.Split(cfg.Users.Include, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
 }
 
 func init() {

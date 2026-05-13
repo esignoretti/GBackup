@@ -102,6 +102,7 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			Corpora("allDrives").
 			IncludeItemsFromAllDrives(true).
 			SupportsAllDrives(true).
+			Q(fmt.Sprintf("'%s' in owners", user)).
 			PageSize(100).
 			Fields("nextPageToken, files(id, name, mimeType, size, md5Checksum, modifiedTime, parents, version)")
 		if pageToken != "" {
@@ -119,8 +120,10 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			}
 
 			checksum := f.Md5Checksum
-			modTime, _ := time.Parse(time.RFC3339, f.ModifiedTime)
-			_ = f.Size
+			modTime, err := time.Parse(time.RFC3339, f.ModifiedTime)
+			if err != nil {
+				return count, fmt.Errorf("parsing modified time for %s: %w", f.Id, err)
+			}
 
 			if !full && d.metaDB != nil {
 				modified, err := d.metaDB.IsModified("drive", user, f.Id, checksum)
@@ -139,9 +142,14 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 
 			var buf bytes.Buffer
 			gw := gzip.NewWriter(&buf)
-			io.Copy(gw, content)
-			gw.Close()
+			_, copyErr := io.Copy(gw, content)
 			content.Close()
+			if closeErr := gw.Close(); closeErr != nil {
+				return count, fmt.Errorf("gzip close: %w", closeErr)
+			}
+			if copyErr != nil {
+				return count, fmt.Errorf("gzip copy: %w", copyErr)
+			}
 
 			if err := d.store.Upload(ctx, objKey, &buf); err != nil {
 				return count, fmt.Errorf("uploading %s: %w", objKey, err)

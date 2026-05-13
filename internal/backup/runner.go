@@ -69,6 +69,23 @@ func (r *Runner) runService(ctx context.Context, service string, full bool) erro
 func (r *Runner) resolveUsers(ctx context.Context) []string {
 	cfg := r.cfg.Config
 	if cfg.Users.Include == "*" {
+		if r.cfg.DirAuth != nil {
+			dirSvc, err := gws.NewDirectoryService(r.cfg.DirAuth)
+			if err == nil {
+				users, err := dirSvc.ListUsers(ctx)
+				if err == nil {
+					var emails []string
+					for _, u := range users {
+						if !u.IsSuspended {
+							emails = append(emails, u.PrimaryEmail)
+						}
+					}
+					if len(emails) > 0 {
+						return emails
+					}
+				}
+			}
+		}
 		return []string{cfg.Workspace.AdminEmail}
 	}
 	parts := strings.Split(cfg.Users.Include, ",")

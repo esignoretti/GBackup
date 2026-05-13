@@ -25,10 +25,15 @@ type DriveRestore struct {
 }
 
 func (r *DriveRestore) Run(ctx context.Context) error {
+	targetUser := r.TargetUser
+	if targetUser == "" {
+		targetUser = r.User
+	}
+
 	svc, err := drive.NewService(ctx,
 		option.WithCredentialsFile(r.ServiceAccountFile),
 		option.WithScopes(drive.DriveScope),
-		option.ImpersonateCredentials(r.AdminEmail),
+		option.ImpersonateCredentials(targetUser),
 	)
 	if err != nil {
 		return fmt.Errorf("creating drive service: %w", err)
@@ -39,9 +44,18 @@ func (r *DriveRestore) Run(ctx context.Context) error {
 		return fmt.Errorf("listing drive items: %w", err)
 	}
 
-	targetUser := r.TargetUser
-	if targetUser == "" {
-		targetUser = r.User
+	if r.Date != "" && r.Date != "latest" {
+		cutoff, err := time.Parse("2006-01-02", r.Date)
+		if err != nil {
+			return fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
+		}
+		var filtered []*metadata.Item
+		for _, item := range items {
+			if !item.ModifiedAt.After(cutoff.Add(24 * time.Hour)) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 
 	if r.DryRun {
