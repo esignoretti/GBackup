@@ -139,6 +139,5 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 }
 
 func isGmailPreconditionFailed(err error) bool {
-	return strings.Contains(err.Error(), "failedPrecondition") &&
-		(strings.Contains(err.Error(), "mailbox") || strings.Contains(err.Error(), "Account"))
+	return strings.Contains(err.Error(), "Mail service not enabled")
 }
