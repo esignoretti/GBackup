@@ -11,6 +11,13 @@ import (
 	"github.com/esignoretti/gbackup/internal/storage"
 )
 
+func isServiceDisabled(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "SERVICE_DISABLED") ||
+		strings.Contains(msg, "accessNotConfigured") ||
+		strings.Contains(msg, "not been used in project")
+}
+
 type RunnerConfig struct {
 	Config  *config.Config
 	Store   *storage.Client
@@ -44,66 +51,91 @@ func (r *Runner) Run(ctx context.Context, full bool) error {
 
 func (r *Runner) runService(ctx context.Context, service string, full bool) error {
 	users := r.resolveUsers(ctx)
+	var err error
 	switch service {
 	case "drive":
-		dbCfg := &DriveBackupConfig{
-			ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
-			AdminEmail:         r.cfg.DirAuth.AdminEmail,
-		}
-		b, err := NewDriveBackup(dbCfg)
-		if err != nil {
-			return err
-		}
-		b.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
-		for _, user := range users {
-			if _, err := b.BackupUser(ctx, user, full); err != nil {
-				return fmt.Errorf("drive backup for %s: %w", user, err)
-			}
-		}
+		err = r.runDriveBackup(ctx, users, full)
 	case "contacts":
-		cbCfg := &ContactsBackupConfig{
-			ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
-			AdminEmail:         r.cfg.DirAuth.AdminEmail,
-		}
-		cb, err := NewContactsBackup(cbCfg)
-		if err != nil {
-			return err
-		}
-		cb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
-		for _, user := range users {
-			if _, err := cb.BackupUser(ctx, user, full); err != nil {
-				return fmt.Errorf("contacts backup for %s: %w", user, err)
-			}
-		}
+		err = r.runContactsBackup(ctx, users, full)
 	case "calendar":
-		ccfg := &CalendarBackupConfig{
-			ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
-			AdminEmail:         r.cfg.DirAuth.AdminEmail,
-		}
-		cb, err := NewCalendarBackup(ccfg)
-		if err != nil {
-			return err
-		}
-		cb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
-		for _, user := range users {
-			if _, err := cb.BackupUser(ctx, user, full); err != nil {
-				return fmt.Errorf("calendar backup for %s: %w", user, err)
-			}
-		}
+		err = r.runCalendarBackup(ctx, users, full)
 	case "gmail":
-		gcfg := &GmailBackupConfig{
-			ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
-			AdminEmail:         r.cfg.DirAuth.AdminEmail,
+		err = r.runGmailBackup(ctx, users, full)
+	}
+	if err != nil && isServiceDisabled(err) {
+		fmt.Printf("  %s: API not enabled in Google Cloud project, skipping\n", service)
+		return nil
+	}
+	return err
+}
+
+func (r *Runner) runDriveBackup(ctx context.Context, users []string, full bool) error {
+	dbCfg := &DriveBackupConfig{
+		ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
+		AdminEmail:         r.cfg.DirAuth.AdminEmail,
+	}
+	b, err := NewDriveBackup(dbCfg)
+	if err != nil {
+		return err
+	}
+	b.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
+	for _, user := range users {
+		if _, err := b.BackupUser(ctx, user, full); err != nil {
+			return fmt.Errorf("drive backup for %s: %w", user, err)
 		}
-		gb, err := NewGmailBackup(gcfg)
-		if err != nil {
-			return err
+	}
+	return nil
+}
+
+func (r *Runner) runContactsBackup(ctx context.Context, users []string, full bool) error {
+	cbCfg := &ContactsBackupConfig{
+		ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
+		AdminEmail:         r.cfg.DirAuth.AdminEmail,
+	}
+	cb, err := NewContactsBackup(cbCfg)
+	if err != nil {
+		return err
+	}
+	cb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
+	for _, user := range users {
+		if _, err := cb.BackupUser(ctx, user, full); err != nil {
+			return fmt.Errorf("contacts backup for %s: %w", user, err)
 		}
-		gb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
-		for _, user := range users {
-			if _, err := gb.BackupUser(ctx, user, full); err != nil {
-				return fmt.Errorf("gmail backup for %s: %w", user, err)
-			}
+	}
+	return nil
+}
+
+func (r *Runner) runCalendarBackup(ctx context.Context, users []string, full bool) error {
+	ccfg := &CalendarBackupConfig{
+		ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
+		AdminEmail:         r.cfg.DirAuth.AdminEmail,
+	}
+	cb, err := NewCalendarBackup(ccfg)
+	if err != nil {
+		return err
+	}
+	cb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
+	for _, user := range users {
+		if _, err := cb.BackupUser(ctx, user, full); err != nil {
+			return fmt.Errorf("calendar backup for %s: %w", user, err)
+		}
+	}
+	return nil
+}
+
+func (r *Runner) runGmailBackup(ctx context.Context, users []string, full bool) error {
+	gcfg := &GmailBackupConfig{
+		ServiceAccountFile: r.cfg.DirAuth.ServiceAccountFile,
+		AdminEmail:         r.cfg.DirAuth.AdminEmail,
+	}
+	gb, err := NewGmailBackup(gcfg)
+	if err != nil {
+		return err
+	}
+	gb.WithMetaDB(r.cfg.MetaDB).WithStorage(r.cfg.Store)
+	for _, user := range users {
+		if _, err := gb.BackupUser(ctx, user, full); err != nil {
+			return fmt.Errorf("gmail backup for %s: %w", user, err)
 		}
 	}
 	return nil
