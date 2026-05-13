@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -79,6 +81,10 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		}
 		resp, err := call.Do()
 		if err != nil {
+			if isGmailPreconditionFailed(err) {
+				fmt.Printf("  gmail: %s has no Gmail mailbox, skipping\n", user)
+				return 0, nil
+			}
 			return count, fmt.Errorf("listing messages: %w", err)
 		}
 
@@ -131,4 +137,12 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		g.metaDB.RecordBackup("gmail", user, map[bool]string{true: "full", false: "incremental"}[full])
 	}
 	return count, nil
+}
+
+func isGmailPreconditionFailed(err error) bool {
+	apiErr, ok := err.(*googleapi.Error)
+	if !ok {
+		return false
+	}
+	return apiErr.Code == 400 && strings.Contains(apiErr.Message, "failedPrecondition")
 }
