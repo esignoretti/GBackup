@@ -79,6 +79,33 @@ var restoreCmd = &cobra.Command{
 					return err
 				}
 			}
+		case "contacts":
+			r := &restore.ContactsRestore{
+				Store:              store,
+				MetaDB:             db,
+				ServiceAccountFile: cfg.Workspace.AdminEmail + ".json",
+				AdminEmail:         cfg.Workspace.AdminEmail,
+				User:               user,
+				Date:               restoreDate,
+				DryRun:             true,
+				TargetUser:         restoreTarget,
+			}
+			if err := r.Run(context.Background()); err != nil {
+				return err
+			}
+
+			if !restoreDryRun {
+				fmt.Print("Proceed with restore? [y/N]: ")
+				var confirm string
+				fmt.Scanln(&confirm)
+				if confirm != "y" && confirm != "Y" {
+					return fmt.Errorf("restore cancelled")
+				}
+				r.DryRun = false
+				if err := r.Run(context.Background()); err != nil {
+					return err
+				}
+			}
 		default:
 			return fmt.Errorf("restore for %s not yet implemented", service)
 		}
