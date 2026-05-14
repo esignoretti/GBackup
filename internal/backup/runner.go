@@ -15,8 +15,7 @@ func isServiceDisabled(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "SERVICE_DISABLED") ||
 		strings.Contains(msg, "accessNotConfigured") ||
-		strings.Contains(msg, "not been used in project") ||
-		strings.Contains(msg, "failedPrecondition")
+		strings.Contains(msg, "not been used in project")
 }
 
 type RunnerConfig struct {
