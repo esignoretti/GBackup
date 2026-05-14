@@ -20,19 +20,13 @@ type ContactsBackupConfig struct {
 }
 
 type ContactsBackup struct {
-	peopleSvc *people.Service
-	metaDB    *metadata.DB
-	store     *storage.Client
-	cfg       *ContactsBackupConfig
+	metaDB *metadata.DB
+	store  *storage.Client
+	cfg    *ContactsBackupConfig
 }
 
 func NewContactsBackup(cfg *ContactsBackupConfig) (*ContactsBackup, error) {
 	return &ContactsBackup{cfg: cfg}, nil
-}
-
-func (c *ContactsBackup) WithPeopleService(svc *people.Service) *ContactsBackup {
-	c.peopleSvc = svc
-	return c
 }
 
 func (c *ContactsBackup) WithMetaDB(db *metadata.DB) *ContactsBackup {
@@ -45,31 +39,20 @@ func (c *ContactsBackup) WithStorage(s *storage.Client) *ContactsBackup {
 	return c
 }
 
-func (c *ContactsBackup) initService(ctx context.Context) error {
-	if c.peopleSvc != nil {
-		return nil
-	}
+func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
 	svc, err := people.NewService(ctx,
 		option.WithCredentialsFile(c.cfg.ServiceAccountFile),
 		option.WithScopes(gws.ScopesForService("contacts")...),
-		option.ImpersonateCredentials(c.cfg.AdminEmail),
+		option.ImpersonateCredentials(user),
 	)
 	if err != nil {
-		return fmt.Errorf("creating people service: %w", err)
-	}
-	c.peopleSvc = svc
-	return nil
-}
-
-func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
-	if err := c.initService(ctx); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("creating people service for %s: %w", user, err)
 	}
 
 	var count int
 	pageToken := ""
 	for {
-		call := c.peopleSvc.People.Connections.List("people/me").
+		call := svc.People.Connections.List("people/me").
 			Context(ctx).
 			PersonFields("names,emailAddresses,phoneNumbers,organizations,birthdays,addresses,photos,metadata").
 			PageSize(1000)

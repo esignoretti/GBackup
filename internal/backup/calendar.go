@@ -20,7 +20,6 @@ type CalendarBackupConfig struct {
 }
 
 type CalendarBackup struct {
-	calSvc *calendar.Service
 	metaDB *metadata.DB
 	store  *storage.Client
 	cfg    *CalendarBackupConfig
@@ -28,11 +27,6 @@ type CalendarBackup struct {
 
 func NewCalendarBackup(cfg *CalendarBackupConfig) (*CalendarBackup, error) {
 	return &CalendarBackup{cfg: cfg}, nil
-}
-
-func (c *CalendarBackup) WithCalendarService(svc *calendar.Service) *CalendarBackup {
-	c.calSvc = svc
-	return c
 }
 
 func (c *CalendarBackup) WithMetaDB(db *metadata.DB) *CalendarBackup {
@@ -45,31 +39,20 @@ func (c *CalendarBackup) WithStorage(s *storage.Client) *CalendarBackup {
 	return c
 }
 
-func (c *CalendarBackup) initService(ctx context.Context) error {
-	if c.calSvc != nil {
-		return nil
-	}
+func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
 	svc, err := calendar.NewService(ctx,
 		option.WithCredentialsFile(c.cfg.ServiceAccountFile),
 		option.WithScopes(gws.ScopesForService("calendar")...),
-		option.ImpersonateCredentials(c.cfg.AdminEmail),
+		option.ImpersonateCredentials(user),
 	)
 	if err != nil {
-		return fmt.Errorf("creating calendar service: %w", err)
-	}
-	c.calSvc = svc
-	return nil
-}
-
-func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
-	if err := c.initService(ctx); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("creating calendar service for %s: %w", user, err)
 	}
 
 	var count int
 	pageToken := ""
 	for {
-		call := c.calSvc.Events.List("primary").
+		call := svc.Events.List("primary").
 			Context(ctx).
 			SingleEvents(true).
 			MaxResults(2500).

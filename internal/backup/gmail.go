@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"strings"
 
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
@@ -21,19 +20,13 @@ type GmailBackupConfig struct {
 }
 
 type GmailBackup struct {
-	gmailSvc *gmail.Service
-	metaDB   *metadata.DB
-	store    *storage.Client
-	cfg      *GmailBackupConfig
+	metaDB *metadata.DB
+	store  *storage.Client
+	cfg    *GmailBackupConfig
 }
 
 func NewGmailBackup(cfg *GmailBackupConfig) (*GmailBackup, error) {
 	return &GmailBackup{cfg: cfg}, nil
-}
-
-func (g *GmailBackup) WithGmailService(svc *gmail.Service) *GmailBackup {
-	g.gmailSvc = svc
-	return g
 }
 
 func (g *GmailBackup) WithMetaDB(db *metadata.DB) *GmailBackup {
@@ -46,32 +39,20 @@ func (g *GmailBackup) WithStorage(s *storage.Client) *GmailBackup {
 	return g
 }
 
-func (g *GmailBackup) initService(ctx context.Context) error {
-	if g.gmailSvc != nil {
-		return nil
-	}
+func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
 	svc, err := gmail.NewService(ctx,
 		option.WithCredentialsFile(g.cfg.ServiceAccountFile),
 		option.WithScopes(gws.ScopesForService("gmail")...),
-		option.ImpersonateCredentials(g.cfg.AdminEmail),
+		option.ImpersonateCredentials(user),
 	)
 	if err != nil {
-		return fmt.Errorf("creating gmail service: %w", err)
-	}
-	g.gmailSvc = svc
-	return nil
-}
-
-func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
-	if err := g.initService(ctx); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("creating gmail service for %s: %w", user, err)
 	}
 
-	userEmail := user
 	var count int
 	pageToken := ""
 	for {
-		call := g.gmailSvc.Users.Messages.List(userEmail).
+		call := svc.Users.Messages.List(user).
 			Context(ctx).
 			MaxResults(500).
 			IncludeSpamTrash(false)
@@ -80,15 +61,11 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		}
 		resp, err := call.Do()
 		if err != nil {
-			if isGmailPreconditionFailed(err) {
-				fmt.Printf("  gmail: %s has no Gmail mailbox, skipping\n", user)
-				return 0, nil
-			}
 			return count, fmt.Errorf("listing messages: %w", err)
 		}
 
 		for _, m := range resp.Messages {
-			msg, err := g.gmailSvc.Users.Messages.Get(userEmail, m.Id).Context(ctx).Format("raw").Do()
+			msg, err := svc.Users.Messages.Get(user, m.Id).Context(ctx).Format("raw").Do()
 			if err != nil {
 				return count, fmt.Errorf("getting message %s: %w", m.Id, err)
 			}
@@ -136,8 +113,4 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		g.metaDB.RecordBackup("gmail", user, map[bool]string{true: "full", false: "incremental"}[full])
 	}
 	return count, nil
-}
-
-func isGmailPreconditionFailed(err error) bool {
-	return strings.Contains(err.Error(), "Mail service not enabled")
 }
