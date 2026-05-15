@@ -1,12 +1,13 @@
 package backup
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 
+	"github.com/esignoretti/gbackup/internal/archive"
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
@@ -49,7 +50,7 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 		return 0, fmt.Errorf("creating people service for %s: %w", user, err)
 	}
 
-	var count int
+	var allEntries []archive.ArchiveEntry
 	pageToken := ""
 	for {
 		call := svc.People.Connections.List("people/me").
@@ -61,51 +62,19 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 		}
 		resp, err := call.Do()
 		if err != nil {
-			return count, fmt.Errorf("listing connections: %w", err)
+			return 0, fmt.Errorf("listing connections: %w", err)
 		}
 
 		for _, person := range resp.Connections {
-			resourceName := person.ResourceName
-			etag := person.Etag
-
-			if !full && c.metaDB != nil && etag != "" {
-				modified, err := c.metaDB.IsModified("contacts", user, resourceName, etag)
-				if err == nil && !modified {
-					continue
-				}
-			}
-
 			data, err := json.Marshal(person)
 			if err != nil {
-				return count, fmt.Errorf("marshaling contact %s: %w", resourceName, err)
+				return 0, fmt.Errorf("marshaling contact %s: %w", person.ResourceName, err)
 			}
-
-			objKey := storage.ObjectKey("contacts", user, fmt.Sprintf("contacts/%s.json", resourceName))
-			var buf bytes.Buffer
-			gw := gzip.NewWriter(&buf)
-			if _, err := gw.Write(data); err != nil {
-				gw.Close()
-				return count, fmt.Errorf("gzip write: %w", err)
-			}
-			if err := gw.Close(); err != nil {
-				return count, fmt.Errorf("gzip close: %w", err)
-			}
-
-			if err := c.store.Upload(ctx, objKey, &buf); err != nil {
-				return count, fmt.Errorf("uploading %s: %w", objKey, err)
-			}
-
-			if c.metaDB != nil {
-				c.metaDB.TrackItem(&metadata.Item{
-					Service:   "contacts",
-					User:      user,
-					ObjectKey: objKey,
-					ItemID:    resourceName,
-					Size:      int64(buf.Len()),
-					Checksum:  etag,
-				})
-			}
-			count++
+			entryName := fmt.Sprintf("%s.json", strings.ReplaceAll(person.ResourceName, "/", "_"))
+			allEntries = append(allEntries, archive.ArchiveEntry{
+				Name: entryName,
+				Data: data,
+			})
 		}
 
 		pageToken = resp.NextPageToken
@@ -114,8 +83,53 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 		}
 	}
 
+	if len(allEntries) == 0 {
+		return 0, nil
+	}
+
+	objKey := storage.ObjectKey("contacts", user, "all.tar.gz")
+
+	var archiveReader io.Reader
+	if !full {
+		existing, err := c.store.Download(ctx, objKey)
+		if err == nil {
+			archiveReader, err = archive.AppendToArchive(existing, allEntries)
+			if err != nil {
+				return 0, fmt.Errorf("appending to archive: %w", err)
+			}
+		} else {
+			archiveReader, err = archive.Create(allEntries)
+			if err != nil {
+				return 0, fmt.Errorf("creating archive: %w", err)
+			}
+		}
+	} else {
+		archiveReader, err = archive.Create(allEntries)
+		if err != nil {
+			return 0, fmt.Errorf("creating archive: %w", err)
+		}
+	}
+
+	if err := c.store.Upload(ctx, objKey, archiveReader); err != nil {
+		return 0, fmt.Errorf("uploading %s: %w", objKey, err)
+	}
+
+	for _, entry := range allEntries {
+		if c.metaDB != nil {
+			c.metaDB.TrackItem(&metadata.Item{
+				Service:   "contacts",
+				User:      user,
+				ObjectKey: objKey,
+				ItemPath:  entry.Name,
+				ItemID:    entry.Name,
+				Size:      int64(len(entry.Data)),
+				Checksum:  entry.Name,
+			})
+		}
+	}
+
 	if c.metaDB != nil {
 		c.metaDB.RecordBackup("contacts", user, map[bool]string{true: "full", false: "incremental"}[full])
 	}
-	return count, nil
+	return len(allEntries), nil
 }
