@@ -27,6 +27,7 @@ func TestTrackAndGetItem(t *testing.T) {
 		Service:    "drive",
 		User:       "user@test.com",
 		ObjectKey:  "drive/user@test.com/files/abc123",
+		ItemPath:   "",
 		ItemID:     "abc123",
 		Size:       1024,
 		Checksum:   "sha256-hash",
@@ -56,6 +57,7 @@ func TestIsModified(t *testing.T) {
 		Service:    "drive",
 		User:       "u@t.com",
 		ObjectKey:  "drive/u@t.com/files/x1",
+		ItemPath:   "",
 		ItemID:     "x1",
 		Size:       100,
 		Checksum:   "oldhash",
@@ -120,9 +122,9 @@ func TestItemsByService(t *testing.T) {
 	defer db.Close()
 
 	items := []*Item{
-		{Service: "drive", User: "u@t.com", ObjectKey: "k1", ItemID: "i1", ModifiedAt: time.Now()},
-		{Service: "drive", User: "u@t.com", ObjectKey: "k2", ItemID: "i2", ModifiedAt: time.Now()},
-		{Service: "gmail", User: "u@t.com", ObjectKey: "k3", ItemID: "i3", ModifiedAt: time.Now()},
+		{Service: "drive", User: "u@t.com", ObjectKey: "k1", ItemPath: "", ItemID: "i1", ModifiedAt: time.Now()},
+		{Service: "drive", User: "u@t.com", ObjectKey: "k2", ItemPath: "", ItemID: "i2", ModifiedAt: time.Now()},
+		{Service: "gmail", User: "u@t.com", ObjectKey: "k3", ItemPath: "", ItemID: "i3", ModifiedAt: time.Now()},
 	}
 	for _, it := range items {
 		db.TrackItem(it)
@@ -143,7 +145,7 @@ func TestBackupAndRestoreDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.TrackItem(&Item{Service: "drive", User: "u@t.com", ObjectKey: "k1", ItemID: "i1", ModifiedAt: time.Now()})
+	db.TrackItem(&Item{Service: "drive", User: "u@t.com", ObjectKey: "k1", ItemPath: "", ItemID: "i1", ModifiedAt: time.Now()})
 	db.Close()
 
 	backupPath := filepath.Join(dir, "meta_backup.db.gz")

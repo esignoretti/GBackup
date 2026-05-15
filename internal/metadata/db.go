@@ -15,6 +15,7 @@ type Item struct {
 	Service    string
 	User       string
 	ObjectKey  string
+	ItemPath   string
 	ItemID     string
 	Size       int64
 	Checksum   string
@@ -49,6 +50,7 @@ func migrate(db *sql.DB) error {
 		service    TEXT NOT NULL,
 		user_email TEXT NOT NULL,
 		object_key TEXT NOT NULL,
+		item_path  TEXT NOT NULL DEFAULT '',
 		item_id    TEXT NOT NULL,
 		size       INTEGER NOT NULL DEFAULT 0,
 		checksum   TEXT NOT NULL DEFAULT '',
@@ -64,27 +66,40 @@ func migrate(db *sql.DB) error {
 		completed_at DATETIME
 	);
 	`
-	_, err := db.Exec(schema)
-	return err
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+
+	row := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='item_path'")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return fmt.Errorf("checking schema: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec("ALTER TABLE items ADD COLUMN item_path TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("adding item_path: %w", err)
+		}
+	}
+	return nil
 }
 
 func (d *DB) TrackItem(item *Item) error {
 	_, err := d.db.Exec(`
-		INSERT OR REPLACE INTO items (service, user_email, object_key, item_id, size, checksum, modified_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		item.Service, item.User, item.ObjectKey, item.ItemID, item.Size, item.Checksum, item.ModifiedAt,
+		INSERT OR REPLACE INTO items (service, user_email, object_key, item_path, item_id, size, checksum, modified_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.Service, item.User, item.ObjectKey, item.ItemPath, item.ItemID, item.Size, item.Checksum, item.ModifiedAt,
 	)
 	return err
 }
 
 func (d *DB) GetItem(service, user, itemID string) (*Item, error) {
 	row := d.db.QueryRow(`
-		SELECT service, user_email, object_key, item_id, size, checksum, modified_at
+		SELECT service, user_email, object_key, item_path, item_id, size, checksum, modified_at
 		FROM items WHERE service = ? AND user_email = ? AND item_id = ?`,
 		service, user, itemID,
 	)
 	item := &Item{}
-	err := row.Scan(&item.Service, &item.User, &item.ObjectKey, &item.ItemID, &item.Size, &item.Checksum, &item.ModifiedAt)
+	err := row.Scan(&item.Service, &item.User, &item.ObjectKey, &item.ItemPath, &item.ItemID, &item.Size, &item.Checksum, &item.ModifiedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +149,7 @@ func (d *DB) RecordBackup(service, user, runType string) error {
 
 func (d *DB) ItemsByService(service, user string) ([]*Item, error) {
 	rows, err := d.db.Query(`
-		SELECT service, user_email, object_key, item_id, size, checksum, modified_at
+		SELECT service, user_email, object_key, item_path, item_id, size, checksum, modified_at
 		FROM items WHERE service = ? AND user_email = ?`,
 		service, user,
 	)
@@ -146,7 +161,7 @@ func (d *DB) ItemsByService(service, user string) ([]*Item, error) {
 	var items []*Item
 	for rows.Next() {
 		item := &Item{}
-		if err := rows.Scan(&item.Service, &item.User, &item.ObjectKey, &item.ItemID, &item.Size, &item.Checksum, &item.ModifiedAt); err != nil {
+		if err := rows.Scan(&item.Service, &item.User, &item.ObjectKey, &item.ItemPath, &item.ItemID, &item.Size, &item.Checksum, &item.ModifiedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
