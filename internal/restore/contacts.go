@@ -1,12 +1,11 @@
 package restore
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 
+	"github.com/esignoretti/gbackup/internal/archive"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/option"
@@ -35,6 +34,11 @@ func (r *ContactsRestore) Run(ctx context.Context) error {
 		return fmt.Errorf("listing contacts: %w", err)
 	}
 
+	if len(items) == 0 {
+		fmt.Println("No contacts to restore.")
+		return nil
+	}
+
 	if r.DryRun {
 		fmt.Printf("Would restore %d contacts to %s\n", len(items), targetUser)
 		for _, item := range items {
@@ -52,55 +56,49 @@ func (r *ContactsRestore) Run(ctx context.Context) error {
 		return fmt.Errorf("creating people service: %w", err)
 	}
 
-	for _, item := range items {
-		if err := r.restoreOne(ctx, svc, item); err != nil {
-			return err
-		}
-	}
-
-	fmt.Printf("Restored %d contacts\n", len(items))
-	return nil
-}
-
-func (r *ContactsRestore) restoreOne(ctx context.Context, svc *people.Service, item *metadata.Item) error {
-	rc, err := r.Store.Download(ctx, item.ObjectKey)
+	archiveKey := storage.ObjectKey("contacts", r.User, "all.tar.gz")
+	rc, err := r.Store.Download(ctx, archiveKey)
 	if err != nil {
-		return fmt.Errorf("downloading %s: %w", item.ObjectKey, err)
+		return fmt.Errorf("downloading archive %s: %w", archiveKey, err)
 	}
 	defer rc.Close()
 
-	gr, err := gzip.NewReader(rc)
+	wanted := make(map[string]bool)
+	for _, item := range items {
+		wanted[item.ItemPath] = true
+	}
+
+	var restored int
+	err = archive.Read(rc, func(entry archive.ArchiveEntry) error {
+		if !wanted[entry.Name] {
+			return nil
+		}
+		var person people.Person
+		if err := json.Unmarshal(entry.Data, &person); err != nil {
+			return fmt.Errorf("unmarshaling contact %s: %w", entry.Name, err)
+		}
+		contact := &people.Person{}
+		if len(person.Names) > 0 {
+			contact.Names = []*people.Name{
+				{GivenName: person.Names[0].GivenName, FamilyName: person.Names[0].FamilyName},
+			}
+		}
+		contact.EmailAddresses = person.EmailAddresses
+		contact.PhoneNumbers = person.PhoneNumbers
+		contact.Organizations = person.Organizations
+		contact.Addresses = person.Addresses
+		contact.Birthdays = person.Birthdays
+
+		if _, err := svc.People.CreateContact(contact).Context(ctx).Do(); err != nil {
+			return fmt.Errorf("creating contact %s: %w", entry.Name, err)
+		}
+		restored++
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	defer gr.Close()
 
-	data, err := io.ReadAll(gr)
-	if err != nil {
-		return fmt.Errorf("reading contact data: %w", err)
-	}
-
-	var person people.Person
-	if err := json.Unmarshal(data, &person); err != nil {
-		return fmt.Errorf("unmarshaling contact: %w", err)
-	}
-
-	contact := &people.Person{}
-	if len(person.Names) > 0 {
-		contact.Names = []*people.Name{
-			{GivenName: person.Names[0].GivenName, FamilyName: person.Names[0].FamilyName},
-		}
-	}
-	contact.EmailAddresses = person.EmailAddresses
-	contact.PhoneNumbers = person.PhoneNumbers
-	contact.Organizations = person.Organizations
-	contact.Addresses = person.Addresses
-	contact.Birthdays = person.Birthdays
-
-	_, err = svc.People.CreateContact(contact).Context(ctx).Do()
-	if err != nil {
-		return fmt.Errorf("creating contact %s: %w", item.ItemID, err)
-	}
-
+	fmt.Printf("Restored %d contacts\n", restored)
 	return nil
 }
