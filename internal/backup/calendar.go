@@ -1,12 +1,14 @@
 package backup
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
+	"time"
 
+	"github.com/esignoretti/gbackup/internal/archive"
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
@@ -49,7 +51,7 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 		return 0, fmt.Errorf("creating calendar service for %s: %w", user, err)
 	}
 
-	var count int
+	buckets := make(map[string][]archive.ArchiveEntry)
 	pageToken := ""
 	for {
 		call := svc.Events.List("primary").
@@ -62,17 +64,12 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 		}
 		resp, err := call.Do()
 		if err != nil {
-			return count, fmt.Errorf("listing events: %w", err)
+			return 0, fmt.Errorf("listing events: %w", err)
 		}
 
 		for _, event := range resp.Items {
-			etag := event.Etag
-			if !full && c.metaDB != nil && etag != "" {
-				modified, err := c.metaDB.IsModified("calendar", user, event.Id, etag)
-				if err == nil && !modified {
-					continue
-				}
-			}
+			year := eventYear(event)
+			entryName := fmt.Sprintf("%s.json", event.Id)
 
 			for _, att := range event.Attachments {
 				if att.FileUrl != "" {
@@ -83,35 +80,13 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 
 			data, err := json.Marshal(event)
 			if err != nil {
-				return count, fmt.Errorf("marshaling event %s: %w", event.Id, err)
+				return 0, fmt.Errorf("marshaling event %s: %w", event.Id, err)
 			}
 
-			objKey := storage.ObjectKey("calendar", user, fmt.Sprintf("events/%s.json", event.Id))
-			var buf bytes.Buffer
-			gw := gzip.NewWriter(&buf)
-			if _, err := gw.Write(data); err != nil {
-				gw.Close()
-				return count, fmt.Errorf("gzip write: %w", err)
-			}
-			if err := gw.Close(); err != nil {
-				return count, fmt.Errorf("gzip close: %w", err)
-			}
-
-			if err := c.store.Upload(ctx, objKey, &buf); err != nil {
-				return count, fmt.Errorf("uploading %s: %w", objKey, err)
-			}
-
-			if c.metaDB != nil {
-				c.metaDB.TrackItem(&metadata.Item{
-					Service:   "calendar",
-					User:      user,
-					ObjectKey: objKey,
-					ItemID:    event.Id,
-					Size:      int64(buf.Len()),
-					Checksum:  etag,
-				})
-			}
-			count++
+			buckets[year] = append(buckets[year], archive.ArchiveEntry{
+				Name: entryName,
+				Data: data,
+			})
 		}
 
 		pageToken = resp.NextPageToken
@@ -120,8 +95,76 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 		}
 	}
 
+	if len(buckets) == 0 {
+		return 0, nil
+	}
+
+	var totalCount int
+	for year, entries := range buckets {
+		objKey := storage.ObjectKey("calendar", user, fmt.Sprintf("%s.tar.gz", year))
+
+		var archiveReader io.Reader
+		if !full {
+			existing, err := c.store.Download(ctx, objKey)
+			if err == nil {
+				archiveReader, err = archive.AppendToArchive(existing, entries)
+				if err != nil {
+					return totalCount, fmt.Errorf("appending to archive %s: %w", objKey, err)
+				}
+			} else {
+				archiveReader, err = archive.Create(entries)
+				if err != nil {
+					return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
+				}
+			}
+		} else {
+			archiveReader, err = archive.Create(entries)
+			if err != nil {
+				return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
+			}
+		}
+
+		if err := c.store.Upload(ctx, objKey, archiveReader); err != nil {
+			return totalCount, fmt.Errorf("uploading %s: %w", objKey, err)
+		}
+
+		for _, entry := range entries {
+			if c.metaDB != nil {
+				c.metaDB.TrackItem(&metadata.Item{
+					Service:   "calendar",
+					User:      user,
+					ObjectKey: objKey,
+					ItemPath:  entry.Name,
+					ItemID:    strings.TrimSuffix(entry.Name, ".json"),
+					Size:      int64(len(entry.Data)),
+					Checksum:  entry.Name,
+				})
+			}
+			totalCount++
+		}
+	}
+
 	if c.metaDB != nil {
 		c.metaDB.RecordBackup("calendar", user, map[bool]string{true: "full", false: "incremental"}[full])
 	}
-	return count, nil
+	return totalCount, nil
+}
+
+func eventYear(event *calendar.Event) string {
+	if event.Start == nil {
+		return time.Now().Format("2006")
+	}
+	if event.Start.Date != "" {
+		t, err := time.Parse("2006-01-02", event.Start.Date)
+		if err == nil {
+			return t.Format("2006")
+		}
+	}
+	if event.Start.DateTime != "" {
+		t, err := time.Parse(time.RFC3339, event.Start.DateTime)
+		if err == nil {
+			return t.Format("2006")
+		}
+	}
+	return time.Now().Format("2006")
 }
