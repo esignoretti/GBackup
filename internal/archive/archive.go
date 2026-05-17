@@ -15,7 +15,7 @@ type ArchiveEntry struct {
 	Data []byte
 }
 
-func Create(entries []ArchiveEntry) (io.Reader, error) {
+func Create(entries []ArchiveEntry) ([]byte, error) {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
@@ -44,10 +44,10 @@ func Create(entries []ArchiveEntry) (io.Reader, error) {
 	if err := gw.Close(); err != nil {
 		return nil, err
 	}
-	return &buf, nil
+	return buf.Bytes(), nil
 }
 
-func AppendToArchive(existing io.Reader, entries []ArchiveEntry) (io.Reader, error) {
+func AppendToArchive(existing io.Reader, entries []ArchiveEntry) ([]byte, error) {
 	gr, err := gzip.NewReader(existing)
 	if err != nil {
 		return nil, fmt.Errorf("reading existing gzip: %w", err)
@@ -81,6 +81,14 @@ func AppendToArchive(existing io.Reader, entries []ArchiveEntry) (io.Reader, err
 	}
 
 	return Create(all)
+}
+
+func CreateReader(entries []ArchiveEntry) (io.Reader, error) {
+	data, err := Create(entries)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(data), nil
 }
 
 func Read(r io.Reader, fn func(ArchiveEntry) error) error {

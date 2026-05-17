@@ -10,6 +10,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	gconfig "github.com/esignoretti/gbackup/internal/config"
 )
 
@@ -24,6 +25,8 @@ func NewClient(cfg *gconfig.StorageConfig) (*Client, error) {
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			cfg.AccessKeyID, cfg.SecretAccessKey, "",
 		)),
+		awsconfig.WithRetryMode(aws.RetryModeAdaptive),
+		awsconfig.WithRetryMaxAttempts(10),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("loading AWS config: %w", err)
@@ -69,6 +72,28 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	return err
+}
+
+func (c *Client) DeleteObjects(ctx context.Context, keys []string) error {
+	for i := 0; i < len(keys); i += 1000 {
+		end := i + 1000
+		if end > len(keys) {
+			end = len(keys)
+		}
+		batch := keys[i:end]
+		idents := make([]types.ObjectIdentifier, len(batch))
+		for j, k := range batch {
+			idents[j] = types.ObjectIdentifier{Key: aws.String(k)}
+		}
+		_, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(c.bucket),
+			Delete: &types.Delete{Objects: idents, Quiet: aws.Bool(true)},
+		})
+		if err != nil {
+			return fmt.Errorf("deleting batch %d-%d: %w", i, end, err)
+		}
+	}
+	return nil
 }
 
 func (c *Client) List(ctx context.Context, prefix string) ([]string, error) {

@@ -11,6 +11,7 @@ import (
 	"github.com/esignoretti/gbackup/internal/config"
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
+	"github.com/esignoretti/gbackup/internal/progress"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"github.com/spf13/cobra"
 )
@@ -42,9 +43,10 @@ var backupCmd = &cobra.Command{
 		defer db.Close()
 
 		runner := backup.NewRunner(&backup.RunnerConfig{
-			Config: cfg,
-			Store:  store,
-			MetaDB: db,
+			Config:   cfg,
+			Store:    store,
+			MetaDB:   db,
+			Progress: progress.New(),
 			DirAuth: &gws.AuthConfig{
 				ServiceAccountFile: cfg.Workspace.ServiceAccountFile,
 				AdminEmail:         cfg.Workspace.AdminEmail,

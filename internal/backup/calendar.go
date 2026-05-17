@@ -1,16 +1,17 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
 	"github.com/esignoretti/gbackup/internal/archive"
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
+	"github.com/esignoretti/gbackup/internal/progress"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
@@ -22,9 +23,11 @@ type CalendarBackupConfig struct {
 }
 
 type CalendarBackup struct {
-	metaDB *metadata.DB
-	store  *storage.Client
-	cfg    *CalendarBackupConfig
+	metaDB   *metadata.DB
+	store    *storage.Client
+	cfg      *CalendarBackupConfig
+	progress *progress.Reporter
+	maxAge   time.Duration
 }
 
 func NewCalendarBackup(cfg *CalendarBackupConfig) (*CalendarBackup, error) {
@@ -41,7 +44,22 @@ func (c *CalendarBackup) WithStorage(s *storage.Client) *CalendarBackup {
 	return c
 }
 
+func (c *CalendarBackup) WithProgress(p *progress.Reporter) *CalendarBackup {
+	c.progress = p
+	return c
+}
+
+func (c *CalendarBackup) WithMaxAge(d time.Duration) *CalendarBackup {
+	c.maxAge = d
+	return c
+}
+
 func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
+	runType := map[bool]string{true: "full", false: "incremental"}[full]
+	if c.progress != nil {
+		c.progress.Service("calendar", user, runType)
+	}
+
 	svc, err := calendar.NewService(ctx,
 		option.WithCredentialsFile(c.cfg.ServiceAccountFile),
 		option.WithScopes(gws.ScopesForService("calendar")...),
@@ -52,13 +70,15 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 	}
 
 	buckets := make(map[string][]archive.ArchiveEntry)
+	var fetched int
 	pageToken := ""
 	for {
 		call := svc.Events.List("primary").
 			Context(ctx).
 			SingleEvents(true).
 			MaxResults(2500).
-			ShowDeleted(false)
+			ShowDeleted(false).
+			TimeMin(time.Now().Add(-366 * 24 * time.Hour).Format(time.RFC3339))
 		if pageToken != "" {
 			call.PageToken(pageToken)
 		}
@@ -67,9 +87,17 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 			return 0, fmt.Errorf("listing events: %w", err)
 		}
 
+
 		for _, event := range resp.Items {
 			year := eventYear(event)
 			entryName := fmt.Sprintf("%s.json", event.Id)
+
+			if c.maxAge > 0 {
+				eventTime := eventStartTime(event)
+				if eventTime != nil && time.Since(*eventTime) > c.maxAge {
+					continue
+				}
+			}
 
 			for _, att := range event.Attachments {
 				if att.FileUrl != "" {
@@ -87,12 +115,17 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 				Name: entryName,
 				Data: data,
 			})
+			fetched++
 		}
 
 		pageToken = resp.NextPageToken
 		if pageToken == "" {
 			break
 		}
+	}
+
+	if c.progress != nil {
+		c.progress.FetchDone("events", fetched)
 	}
 
 	if len(buckets) == 0 {
@@ -103,29 +136,33 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 	for year, entries := range buckets {
 		objKey := storage.ObjectKey("calendar", user, fmt.Sprintf("%s.tar.gz", year))
 
-		var archiveReader io.Reader
+		var archiveData []byte
 		if !full {
 			existing, err := c.store.Download(ctx, objKey)
 			if err == nil {
-				archiveReader, err = archive.AppendToArchive(existing, entries)
+				archiveData, err = archive.AppendToArchive(existing, entries)
 				if err != nil {
 					return totalCount, fmt.Errorf("appending to archive %s: %w", objKey, err)
 				}
 			} else {
-				archiveReader, err = archive.Create(entries)
+				archiveData, err = archive.Create(entries)
 				if err != nil {
 					return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
 				}
 			}
 		} else {
-			archiveReader, err = archive.Create(entries)
+			archiveData, err = archive.Create(entries)
 			if err != nil {
 				return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
 			}
 		}
 
-		if err := c.store.Upload(ctx, objKey, archiveReader); err != nil {
+		if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
 			return totalCount, fmt.Errorf("uploading %s: %w", objKey, err)
+		}
+
+		if c.progress != nil {
+			c.progress.Upload(objKey)
 		}
 
 		for _, entry := range entries {
@@ -167,4 +204,23 @@ func eventYear(event *calendar.Event) string {
 		}
 	}
 	return time.Now().Format("2006")
+}
+
+func eventStartTime(event *calendar.Event) *time.Time {
+	if event.Start == nil {
+		return nil
+	}
+	if event.Start.Date != "" {
+		t, err := time.Parse("2006-01-02", event.Start.Date)
+		if err == nil {
+			return &t
+		}
+	}
+	if event.Start.DateTime != "" {
+		t, err := time.Parse(time.RFC3339, event.Start.DateTime)
+		if err == nil {
+			return &t
+		}
+	}
+	return nil
 }

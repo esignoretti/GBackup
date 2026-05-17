@@ -12,6 +12,7 @@ import (
 
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
+	"github.com/esignoretti/gbackup/internal/progress"
 	"github.com/esignoretti/gbackup/internal/storage"
 	drive "google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
@@ -27,6 +28,8 @@ type DriveBackup struct {
 	metaDB   *metadata.DB
 	store    *storage.Client
 	cfg      *DriveBackupConfig
+	progress *progress.Reporter
+	maxAge   time.Duration
 }
 
 func NewDriveBackup(cfg *DriveBackupConfig) (*DriveBackup, error) {
@@ -45,6 +48,16 @@ func (d *DriveBackup) WithMetaDB(db *metadata.DB) *DriveBackup {
 
 func (d *DriveBackup) WithStorage(s *storage.Client) *DriveBackup {
 	d.store = s
+	return d
+}
+
+func (d *DriveBackup) WithProgress(p *progress.Reporter) *DriveBackup {
+	d.progress = p
+	return d
+}
+
+func (d *DriveBackup) WithMaxAge(dur time.Duration) *DriveBackup {
+	d.maxAge = dur
 	return d
 }
 
@@ -90,20 +103,35 @@ func filterUsers(users, exclude []string) []string {
 	return result
 }
 
+func (d *DriveBackup) buildQuery(user string) string {
+	q := fmt.Sprintf("'%s' in owners", user)
+	if d.maxAge > 0 {
+		cutoff := time.Now().Add(-d.maxAge).Format(time.RFC3339)
+		q += fmt.Sprintf(" and modifiedTime > '%s'", cutoff)
+	}
+	return q
+}
+
 func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
 	if err := d.initDriveService(ctx); err != nil {
 		return 0, err
 	}
 
+	runType := map[bool]string{true: "full", false: "incremental"}[full]
+	if d.progress != nil {
+		d.progress.Service("drive", user, runType)
+	}
+
 	var count int
 	pageToken := ""
+	var fetched int
 	for {
 		call := d.driveSvc.Files.List().
 			Context(ctx).
 			Corpora("allDrives").
 			IncludeItemsFromAllDrives(true).
 			SupportsAllDrives(true).
-			Q(fmt.Sprintf("'%s' in owners", user)).
+			Q(d.buildQuery(user)).
 			PageSize(100).
 			Fields("nextPageToken, files(id, name, mimeType, size, md5Checksum, modifiedTime, parents, version)")
 		if pageToken != "" {
@@ -113,6 +141,7 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		if err != nil {
 			return count, fmt.Errorf("listing files: %w", err)
 		}
+
 
 		for _, f := range fileList.Files {
 			category := mimeCategory(f.MimeType)
@@ -137,6 +166,7 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			if err != nil {
 				return count, fmt.Errorf("downloading %s: %w", f.Name, err)
 			}
+			fetched++
 
 			version := f.Version
 			objKey := storage.ObjectKey("drive", user, fmt.Sprintf("files/%s_v%d", f.Id, version))
@@ -150,8 +180,12 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 				return count, fmt.Errorf("compression failed: %w", err)
 			}
 
-			if err := d.store.Upload(ctx, objKey, &buf); err != nil {
+			if err := d.store.Upload(ctx, objKey, bytes.NewReader(buf.Bytes())); err != nil {
 				return count, fmt.Errorf("uploading %s: %w", objKey, err)
+			}
+
+			if d.progress != nil {
+				d.progress.Upload(objKey)
 			}
 
 			if d.metaDB != nil {
@@ -172,6 +206,10 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		if pageToken == "" {
 			break
 		}
+	}
+
+	if d.progress != nil {
+		d.progress.FetchDone("files", fetched)
 	}
 
 	if d.metaDB != nil {

@@ -27,10 +27,11 @@ type DB struct {
 }
 
 func New(path string) (*DB, error) {
-	db, err := sql.Open("sqlite3", path+"?parseTime=true")
+	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000&parseTime=true")
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("pinging db: %w", err)
 	}

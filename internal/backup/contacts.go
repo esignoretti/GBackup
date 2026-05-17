@@ -1,15 +1,17 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
+	"time"
 
 	"github.com/esignoretti/gbackup/internal/archive"
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
+	"github.com/esignoretti/gbackup/internal/progress"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/option"
 	"google.golang.org/api/people/v1"
@@ -21,9 +23,11 @@ type ContactsBackupConfig struct {
 }
 
 type ContactsBackup struct {
-	metaDB *metadata.DB
-	store  *storage.Client
-	cfg    *ContactsBackupConfig
+	metaDB   *metadata.DB
+	store    *storage.Client
+	cfg      *ContactsBackupConfig
+	progress *progress.Reporter
+	maxAge   time.Duration
 }
 
 func NewContactsBackup(cfg *ContactsBackupConfig) (*ContactsBackup, error) {
@@ -40,7 +44,22 @@ func (c *ContactsBackup) WithStorage(s *storage.Client) *ContactsBackup {
 	return c
 }
 
+func (c *ContactsBackup) WithProgress(p *progress.Reporter) *ContactsBackup {
+	c.progress = p
+	return c
+}
+
+func (c *ContactsBackup) WithMaxAge(d time.Duration) *ContactsBackup {
+	c.maxAge = d
+	return c
+}
+
 func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
+	runType := map[bool]string{true: "full", false: "incremental"}[full]
+	if c.progress != nil {
+		c.progress.Service("contacts", user, runType)
+	}
+
 	svc, err := people.NewService(ctx,
 		option.WithCredentialsFile(c.cfg.ServiceAccountFile),
 		option.WithScopes(gws.ScopesForService("contacts")...),
@@ -65,6 +84,7 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 			return 0, fmt.Errorf("listing connections: %w", err)
 		}
 
+
 		for _, person := range resp.Connections {
 			data, err := json.Marshal(person)
 			if err != nil {
@@ -83,35 +103,43 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 		}
 	}
 
+	if c.progress != nil {
+		c.progress.FetchDone("contacts", len(allEntries))
+	}
+
 	if len(allEntries) == 0 {
 		return 0, nil
 	}
 
 	objKey := storage.ObjectKey("contacts", user, "all.tar.gz")
 
-	var archiveReader io.Reader
+	var archiveData []byte
 	if !full {
 		existing, err := c.store.Download(ctx, objKey)
 		if err == nil {
-			archiveReader, err = archive.AppendToArchive(existing, allEntries)
+			archiveData, err = archive.AppendToArchive(existing, allEntries)
 			if err != nil {
 				return 0, fmt.Errorf("appending to archive: %w", err)
 			}
 		} else {
-			archiveReader, err = archive.Create(allEntries)
+			archiveData, err = archive.Create(allEntries)
 			if err != nil {
 				return 0, fmt.Errorf("creating archive: %w", err)
 			}
 		}
 	} else {
-		archiveReader, err = archive.Create(allEntries)
+		archiveData, err = archive.Create(allEntries)
 		if err != nil {
 			return 0, fmt.Errorf("creating archive: %w", err)
 		}
 	}
 
-	if err := c.store.Upload(ctx, objKey, archiveReader); err != nil {
+	if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
 		return 0, fmt.Errorf("uploading %s: %w", objKey, err)
+	}
+
+	if c.progress != nil {
+		c.progress.Upload(objKey)
 	}
 
 	for _, entry := range allEntries {

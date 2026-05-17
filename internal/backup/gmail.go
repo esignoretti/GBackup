@@ -1,20 +1,34 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
+	"math/rand"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/esignoretti/gbackup/internal/archive"
 	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
+	"github.com/esignoretti/gbackup/internal/progress"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"golang.org/x/oauth2/google"
+	"golang.org/x/time/rate"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
+)
+
+const (
+	gmailConcurrency   = 25
+	gmailRateLimit     = 220
+	gmailRateBurst     = 25
+	gmailMaxRetries    = 3
+	gmailListRateLimit = 20
+	gmailListRateBurst = 10
 )
 
 type GmailBackupConfig struct {
@@ -23,9 +37,11 @@ type GmailBackupConfig struct {
 }
 
 type GmailBackup struct {
-	metaDB *metadata.DB
-	store  *storage.Client
-	cfg    *GmailBackupConfig
+	metaDB   *metadata.DB
+	store    *storage.Client
+	cfg      *GmailBackupConfig
+	progress *progress.Reporter
+	maxAge   time.Duration
 }
 
 func NewGmailBackup(cfg *GmailBackupConfig) (*GmailBackup, error) {
@@ -39,6 +55,16 @@ func (g *GmailBackup) WithMetaDB(db *metadata.DB) *GmailBackup {
 
 func (g *GmailBackup) WithStorage(s *storage.Client) *GmailBackup {
 	g.store = s
+	return g
+}
+
+func (g *GmailBackup) WithProgress(p *progress.Reporter) *GmailBackup {
+	g.progress = p
+	return g
+}
+
+func (g *GmailBackup) WithMaxAge(d time.Duration) *GmailBackup {
+	g.maxAge = d
 	return g
 }
 
@@ -56,22 +82,44 @@ func (g *GmailBackup) gmailServiceForUser(ctx context.Context, user string) (*gm
 }
 
 func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
+	runType := map[bool]string{true: "full", false: "incremental"}[full]
+	if g.progress != nil {
+		g.progress.Service("gmail", user, runType)
+	}
+
 	svc, err := g.gmailServiceForUser(ctx, user)
 	if err != nil {
 		return 0, fmt.Errorf("creating gmail service for %s: %w", user, err)
 	}
 
-	buckets := make(map[string][]archive.ArchiveEntry)
+	listLimiter := rate.NewLimiter(rate.Limit(gmailListRateLimit), gmailListRateBurst)
+
+	var listQuery string
+	if g.maxAge > 0 {
+		cutoff := time.Now().Add(-g.maxAge).Format("2006/01/02")
+		listQuery = fmt.Sprintf("after:%s", cutoff)
+	}
+
+	var allMsgIDs []string
 	pageToken := ""
 	for {
+		if err := listLimiter.Wait(ctx); err != nil {
+			return 0, fmt.Errorf("rate limit waiting for list: %w", err)
+		}
+
+		listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
 		call := svc.Users.Messages.List(user).
-			Context(ctx).
+			Context(listCtx).
 			MaxResults(500).
 			IncludeSpamTrash(false)
+		if listQuery != "" {
+			call.Q(listQuery)
+		}
 		if pageToken != "" {
 			call.PageToken(pageToken)
 		}
 		resp, err := call.Do()
+		listCancel()
 		if err != nil {
 			if isServiceDisabled(err) {
 				fmt.Printf("  gmail: API not enabled for %s, skipping\n", user)
@@ -81,22 +129,7 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		}
 
 		for _, m := range resp.Messages {
-			msg, err := svc.Users.Messages.Get(user, m.Id).Context(ctx).Format("raw").Do()
-			if err != nil {
-				return 0, fmt.Errorf("getting message %s: %w", m.Id, err)
-			}
-
-			raw, err := base64.URLEncoding.DecodeString(msg.Raw)
-			if err != nil {
-				return 0, fmt.Errorf("decoding message %s: %w", m.Id, err)
-			}
-
-			month := messageMonth(msg)
-			entryName := fmt.Sprintf("%s.eml", m.Id)
-			buckets[month] = append(buckets[month], archive.ArchiveEntry{
-				Name: entryName,
-				Data: raw,
-			})
+			allMsgIDs = append(allMsgIDs, m.Id)
 		}
 
 		pageToken = resp.NextPageToken
@@ -105,64 +138,220 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		}
 	}
 
+	if g.progress != nil {
+		fmt.Printf("  found %d messages to fetch\n", len(allMsgIDs))
+	}
+
+	limiter := rate.NewLimiter(rate.Limit(gmailRateLimit), gmailRateBurst)
+
+	buckets := make(map[string][]archive.ArchiveEntry)
+	var mu sync.Mutex
+	var fetched int
+	var fetchErr error
+	var fetchErrMu sync.Mutex
+
+	sem := make(chan struct{}, gmailConcurrency)
+	var wg sync.WaitGroup
+
+	for _, id := range allMsgIDs {
+		id := id
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			if err := limiter.Wait(ctx); err != nil {
+				fetchErrMu.Lock()
+				if fetchErr == nil {
+					fetchErr = fmt.Errorf("rate limiter: %w", err)
+				}
+				fetchErrMu.Unlock()
+				return
+			}
+
+			msg, err := fetchWithRetry(ctx, svc, user, id)
+			if err != nil {
+				fetchErrMu.Lock()
+				if fetchErr == nil {
+					fetchErr = err
+				}
+				fetchErrMu.Unlock()
+				return
+			}
+
+			if g.maxAge > 0 {
+				msgTime := time.UnixMilli(msg.InternalDate)
+				if time.Since(msgTime) > g.maxAge {
+					return
+				}
+			}
+
+			raw, err := base64.URLEncoding.DecodeString(msg.Raw)
+			if err != nil {
+				fetchErrMu.Lock()
+				if fetchErr == nil {
+					fetchErr = fmt.Errorf("decoding message %s: %w", id, err)
+				}
+				fetchErrMu.Unlock()
+				return
+			}
+
+			month := messageMonth(msg)
+			entryName := fmt.Sprintf("%s.eml", id)
+
+			mu.Lock()
+			buckets[month] = append(buckets[month], archive.ArchiveEntry{
+				Name: entryName,
+				Data: raw,
+			})
+			fetched++
+			if g.progress != nil && fetched%100 == 0 {
+				fmt.Printf("  fetched %d messages so far...\n", fetched)
+			}
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+
+	if fetchErr != nil {
+		return fetched, fetchErr
+	}
+
+	if g.progress != nil {
+		fmt.Printf("  fetched %d messages\n", fetched)
+	}
+
 	if len(buckets) == 0 {
 		return 0, nil
 	}
 
-	now := time.Now()
-	threeMonthsAgo := now.AddDate(0, -2, 0).Format("2006-01")
-
 	var totalCount int
+	var uploadErr error
+	var uploadMu sync.Mutex
+	var uploadWg sync.WaitGroup
+
 	for month, entries := range buckets {
-		objKey := storage.ObjectKey("gmail", user, fmt.Sprintf("%s.tar.gz", month))
+		month, entries := month, entries
+		uploadWg.Add(1)
+		go func() {
+			defer uploadWg.Done()
 
-		var archiveReader io.Reader
-		if !full && month >= threeMonthsAgo {
-			existing, err := g.store.Download(ctx, objKey)
-			if err == nil {
-				archiveReader, err = archive.AppendToArchive(existing, entries)
-				if err != nil {
-					return totalCount, fmt.Errorf("appending to archive %s: %w", objKey, err)
-				}
-			} else {
-				archiveReader, err = archive.Create(entries)
-				if err != nil {
-					return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
-				}
-			}
-		} else if !full {
-			continue
-		} else {
-			archiveReader, err = archive.Create(entries)
+			n, err := g.uploadMonth(ctx, user, month, entries)
 			if err != nil {
-				return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
+				uploadMu.Lock()
+				if uploadErr == nil {
+					uploadErr = err
+				}
+				uploadMu.Unlock()
+				return
 			}
-		}
+			uploadMu.Lock()
+			totalCount += n
+			uploadMu.Unlock()
+		}()
+	}
 
-		if err := g.store.Upload(ctx, objKey, archiveReader); err != nil {
-			return totalCount, fmt.Errorf("uploading %s: %w", objKey, err)
-		}
+	uploadWg.Wait()
 
-		for _, entry := range entries {
-			if g.metaDB != nil {
-				g.metaDB.TrackItem(&metadata.Item{
-					Service:   "gmail",
-					User:      user,
-					ObjectKey: objKey,
-					ItemPath:  entry.Name,
-					ItemID:    entryNameToID(entry.Name),
-					Size:      int64(len(entry.Data)),
-					Checksum:  entry.Name,
-				})
-			}
-			totalCount++
-		}
+	if uploadErr != nil {
+		return totalCount, uploadErr
 	}
 
 	if g.metaDB != nil {
 		g.metaDB.RecordBackup("gmail", user, map[bool]string{true: "full", false: "incremental"}[full])
 	}
 	return totalCount, nil
+}
+
+func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entries []archive.ArchiveEntry) (int, error) {
+	objKey := storage.ObjectKey("gmail", user, fmt.Sprintf("%s.tar.gz", month))
+
+	archiveData, err := archive.Create(entries)
+	if err != nil {
+		return 0, fmt.Errorf("creating archive %s: %w", objKey, err)
+	}
+
+	if err := g.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
+		return 0, fmt.Errorf("uploading %s: %w", objKey, err)
+	}
+
+	if g.progress != nil {
+		fmt.Printf("  \u2191 %s\n", objKey)
+	}
+
+	for _, entry := range entries {
+		if g.metaDB != nil {
+			g.metaDB.TrackItem(&metadata.Item{
+				Service:   "gmail",
+				User:      user,
+				ObjectKey: objKey,
+				ItemPath:  entry.Name,
+				ItemID:    entryNameToID(entry.Name),
+				Size:      int64(len(entry.Data)),
+				Checksum:  entry.Name,
+			})
+		}
+	}
+	return len(entries), nil
+}
+
+func fetchWithRetry(ctx context.Context, svc *gmail.Service, user, id string) (*gmail.Message, error) {
+	var msg *gmail.Message
+	var err error
+	for attempt := 0; attempt < gmailMaxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(100+rand.Intn(400)) * time.Millisecond
+			for i := 0; i < attempt-1; i++ {
+				backoff *= 2
+				if backoff > 5*time.Second {
+					backoff = 5 * time.Second
+				}
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		msg, err = svc.Users.Messages.Get(user, id).Context(fetchCtx).Format("raw").Do()
+		cancel()
+		if err == nil {
+			return msg, nil
+		}
+		if isRetryableError(err) {
+			continue
+		}
+		return nil, fmt.Errorf("getting message %s: %w", id, err)
+	}
+	return nil, fmt.Errorf("getting message %s after %d retries: %w", id, gmailMaxRetries, err)
+}
+
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "rateLimitExceeded") ||
+		strings.Contains(msg, "Quota exceeded") ||
+		strings.Contains(msg, "RATE_LIMIT_EXCEEDED") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "deadline") ||
+		strings.Contains(msg, "TemporaryRedirect") ||
+		strings.Contains(msg, "internal error") ||
+		strings.Contains(msg, "500") ||
+		strings.Contains(msg, "503")
+}
+
+func isServiceDisabled(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "SERVICE_DISABLED") ||
+		strings.Contains(msg, "accessNotConfigured") ||
+		strings.Contains(msg, "not been used in project")
 }
 
 func messageMonth(msg *gmail.Message) string {

@@ -2,7 +2,6 @@ package archive
 
 import (
 	"bytes"
-	"io"
 	"strings"
 	"testing"
 )
@@ -13,13 +12,13 @@ func TestCreateAndRead(t *testing.T) {
 		{Name: "b.txt", Data: []byte("world")},
 	}
 
-	r, err := Create(entries)
+	data, err := Create(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var seen []ArchiveEntry
-	err = Read(r, func(e ArchiveEntry) error {
+	err = Read(bytes.NewReader(data), func(e ArchiveEntry) error {
 		seen = append(seen, e)
 		return nil
 	})
@@ -38,7 +37,7 @@ func TestAppendToArchive(t *testing.T) {
 	original := []ArchiveEntry{
 		{Name: "a.txt", Data: []byte("original")},
 	}
-	r, err := Create(original)
+	data, err := Create(original)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,13 +46,13 @@ func TestAppendToArchive(t *testing.T) {
 		{Name: "b.txt", Data: []byte("appended")},
 	}
 
-	combined, err := AppendToArchive(r, newEntries)
+	combined, err := AppendToArchive(bytes.NewReader(data), newEntries)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var seen []ArchiveEntry
-	err = Read(combined, func(e ArchiveEntry) error {
+	err = Read(bytes.NewReader(combined), func(e ArchiveEntry) error {
 		seen = append(seen, e)
 		return nil
 	})
@@ -75,7 +74,7 @@ func TestAppendToArchive_DuplicateReplaces(t *testing.T) {
 	original := []ArchiveEntry{
 		{Name: "a.txt", Data: []byte("old")},
 	}
-	r, err := Create(original)
+	data, err := Create(original)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,13 +83,13 @@ func TestAppendToArchive_DuplicateReplaces(t *testing.T) {
 		{Name: "a.txt", Data: []byte("new")},
 	}
 
-	combined, err := AppendToArchive(r, newEntries)
+	combined, err := AppendToArchive(bytes.NewReader(data), newEntries)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var entries []ArchiveEntry
-	err = Read(combined, func(e ArchiveEntry) error {
+	err = Read(bytes.NewReader(combined), func(e ArchiveEntry) error {
 		entries = append(entries, e)
 		return nil
 	})
@@ -106,11 +105,10 @@ func TestAppendToArchive_DuplicateReplaces(t *testing.T) {
 }
 
 func TestCreate_Empty(t *testing.T) {
-	r, err := Create([]ArchiveEntry{})
+	data, err := Create([]ArchiveEntry{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := io.ReadAll(r)
 	if len(data) == 0 {
 		t.Fatal("empty archive should still be valid gzip+tar")
 	}

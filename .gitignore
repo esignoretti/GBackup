@@ -5,3 +5,5 @@ bin/
 .env
 .worktrees/
 .DS_Store
+.sisyphus/
+/gbackup

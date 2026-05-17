@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +18,7 @@ type Config struct {
 	Schedule  ScheduleConfig  `yaml:"schedule"`
 	Services  []string        `yaml:"services"`
 	Users     UsersConfig     `yaml:"users"`
+	Retention RetentionConfig `yaml:"retention"`
 }
 
 type WorkspaceConfig struct {
@@ -38,9 +42,58 @@ type ScheduleConfig struct {
 }
 
 type RetentionConfig struct {
-	IncrementalDays int  `yaml:"incremental_days"`
-	FullBackups     int  `yaml:"full_backups"`
-	AutoPrune       bool `yaml:"auto_prune"`
+	IncrementalDays int               `yaml:"incremental_days"`
+	FullBackups     int               `yaml:"full_backups"`
+	AutoPrune       bool              `yaml:"auto_prune"`
+	MaxAge          map[string]string `yaml:"max_age"` // service -> duration string like "2y", "6mo", "30d"
+}
+
+// ParseDuration parses a simplified duration string like "30d", "6mo", "2y".
+// Returns 0 for empty or "0" input.
+func ParseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+	if len(s) >= 2 && s[len(s)-2:] == "mo" {
+		numStr := s[:len(s)-2]
+		n, err := strconv.Atoi(numStr)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		return time.Duration(n) * 30 * 24 * time.Hour, nil
+	}
+	unit := s[len(s)-1]
+	numStr := s[:len(s)-1]
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	switch unit {
+	case 'd':
+		return time.Duration(n) * 24 * time.Hour, nil
+	case 'y':
+		return time.Duration(n) * 365 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("invalid duration %q: expected d, mo, or y", s)
+	}
+}
+
+// MaxAgeFor returns the max age duration for a given service name.
+// Returns 0 if no retention is configured for the service.
+func (r RetentionConfig) MaxAgeFor(service string) time.Duration {
+	if r.MaxAge == nil {
+		return 0
+	}
+	s, ok := r.MaxAge[service]
+	if !ok || s == "" {
+		return 0
+	}
+	d, err := ParseDuration(s)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 type UsersConfig struct {
