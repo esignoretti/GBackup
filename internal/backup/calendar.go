@@ -167,7 +167,7 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 
 		for _, entry := range entries {
 			if c.metaDB != nil {
-				c.metaDB.TrackItem(&metadata.Item{
+				if err := c.metaDB.TrackItem(&metadata.Item{
 					Service:   "calendar",
 					User:      user,
 					ObjectKey: objKey,
@@ -175,14 +175,18 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 					ItemID:    strings.TrimSuffix(entry.Name, ".json"),
 					Size:      int64(len(entry.Data)),
 					Checksum:  entry.Name,
-				})
+				}); err != nil {
+					return totalCount, fmt.Errorf("tracking %s: %w", entry.Name, err)
+				}
 			}
 			totalCount++
 		}
 	}
 
 	if c.metaDB != nil {
-		c.metaDB.RecordBackup("calendar", user, map[bool]string{true: "full", false: "incremental"}[full])
+		if err := c.metaDB.RecordBackup("calendar", user, runType); err != nil {
+			return totalCount, fmt.Errorf("recording backup: %w", err)
+		}
 	}
 	return totalCount, nil
 }

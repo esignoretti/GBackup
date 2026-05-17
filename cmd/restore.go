@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/esignoretti/gbackup/internal/config"
 	"github.com/esignoretti/gbackup/internal/metadata"
@@ -51,118 +53,85 @@ var restoreCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		switch service {
-		case "drive":
-			r := &restore.DriveRestore{
-				Store:              store,
-				MetaDB:             db,
-				ServiceAccountFile: cfg.Workspace.AdminEmail + ".json",
-				AdminEmail:         cfg.Workspace.AdminEmail,
-				User:               user,
-				Date:               restoreDate,
-				DryRun:             true,
-				TargetUser:         restoreTarget,
-			}
-			if err := r.Run(context.Background()); err != nil {
-				return err
-			}
-
-			if !restoreDryRun {
-				fmt.Print("Proceed with restore? [y/N]: ")
-				var confirm string
-				fmt.Scanln(&confirm)
-				if confirm != "y" && confirm != "Y" {
-					return fmt.Errorf("restore cancelled")
-				}
-				r.DryRun = false
-				if err := r.Run(context.Background()); err != nil {
-					return err
-				}
-			}
-		case "contacts":
-			r := &restore.ContactsRestore{
-				Store:              store,
-				MetaDB:             db,
-				ServiceAccountFile: cfg.Workspace.AdminEmail + ".json",
-				AdminEmail:         cfg.Workspace.AdminEmail,
-				User:               user,
-				Date:               restoreDate,
-				DryRun:             true,
-				TargetUser:         restoreTarget,
-			}
-			if err := r.Run(context.Background()); err != nil {
-				return err
-			}
-
-			if !restoreDryRun {
-				fmt.Print("Proceed with restore? [y/N]: ")
-				var confirm string
-				fmt.Scanln(&confirm)
-				if confirm != "y" && confirm != "Y" {
-					return fmt.Errorf("restore cancelled")
-				}
-				r.DryRun = false
-				if err := r.Run(context.Background()); err != nil {
-					return err
-				}
-			}
-		case "calendar":
-			r := &restore.CalendarRestore{
-				Store:              store,
-				MetaDB:             db,
-				ServiceAccountFile: cfg.Workspace.AdminEmail + ".json",
-				AdminEmail:         cfg.Workspace.AdminEmail,
-				User:               user,
-				Date:               restoreDate,
-				DryRun:             true,
-				TargetUser:         restoreTarget,
-			}
-			if err := r.Run(context.Background()); err != nil {
-				return err
-			}
-			if !restoreDryRun {
-				fmt.Print("Proceed with restore? [y/N]: ")
-				var confirm string
-				fmt.Scanln(&confirm)
-				if confirm != "y" && confirm != "Y" {
-					return fmt.Errorf("restore cancelled")
-				}
-				r.DryRun = false
-				if err := r.Run(context.Background()); err != nil {
-					return err
-				}
-			}
-		case "gmail":
-			r := &restore.GmailRestore{
-				Store:              store,
-				MetaDB:             db,
-				ServiceAccountFile: cfg.Workspace.AdminEmail + ".json",
-				AdminEmail:         cfg.Workspace.AdminEmail,
-				User:               user,
-				Date:               restoreDate,
-				DryRun:             true,
-				TargetUser:         restoreTarget,
-			}
-			if err := r.Run(context.Background()); err != nil {
-				return err
-			}
-			if !restoreDryRun {
-				fmt.Print("Proceed with restore? [y/N]: ")
-				var confirm string
-				fmt.Scanln(&confirm)
-				if confirm != "y" && confirm != "Y" {
-					return fmt.Errorf("restore cancelled")
-				}
-				r.DryRun = false
-				if err := r.Run(context.Background()); err != nil {
-					return err
-				}
-			}
-		default:
-			return fmt.Errorf("restore for %s not yet implemented", service)
+		r, err := buildRestorer(service, cfg, store, db, user)
+		if err != nil {
+			return err
 		}
-		return nil
+
+		ctx := context.Background()
+
+		// Always do a dry run first so the operator sees what would happen.
+		r.SetDryRun(true)
+		if err := r.Run(ctx); err != nil {
+			return err
+		}
+		if restoreDryRun {
+			return nil
+		}
+
+		if !confirm("Proceed with restore? [y/N]: ") {
+			return fmt.Errorf("restore cancelled")
+		}
+		r.SetDryRun(false)
+		return r.Run(ctx)
 	},
+}
+
+func buildRestorer(service string, cfg *config.Config, store *storage.Client, db *metadata.DB, user string) (restore.Restorer, error) {
+	switch service {
+	case "drive":
+		return &restore.DriveRestore{
+			Store:              store,
+			MetaDB:             db,
+			ServiceAccountFile: cfg.Workspace.ServiceAccountFile,
+			AdminEmail:         cfg.Workspace.AdminEmail,
+			User:               user,
+			Date:               restoreDate,
+			TargetUser:         restoreTarget,
+		}, nil
+	case "contacts":
+		return &restore.ContactsRestore{
+			Store:              store,
+			MetaDB:             db,
+			ServiceAccountFile: cfg.Workspace.ServiceAccountFile,
+			AdminEmail:         cfg.Workspace.AdminEmail,
+			User:               user,
+			Date:               restoreDate,
+			TargetUser:         restoreTarget,
+		}, nil
+	case "calendar":
+		return &restore.CalendarRestore{
+			Store:              store,
+			MetaDB:             db,
+			ServiceAccountFile: cfg.Workspace.ServiceAccountFile,
+			AdminEmail:         cfg.Workspace.AdminEmail,
+			User:               user,
+			Date:               restoreDate,
+			TargetUser:         restoreTarget,
+		}, nil
+	case "gmail":
+		return &restore.GmailRestore{
+			Store:              store,
+			MetaDB:             db,
+			ServiceAccountFile: cfg.Workspace.ServiceAccountFile,
+			AdminEmail:         cfg.Workspace.AdminEmail,
+			User:               user,
+			Date:               restoreDate,
+			TargetUser:         restoreTarget,
+		}, nil
+	default:
+		return nil, fmt.Errorf("restore for %s not yet implemented", service)
+	}
+}
+
+func confirm(prompt string) bool {
+	fmt.Print(prompt)
+	s := bufio.NewScanner(os.Stdin)
+	if !s.Scan() {
+		return false
+	}
+	ans := strings.ToLower(strings.TrimSpace(s.Text()))
+	return ans == "y" || ans == "yes"
 }
 
 func init() {

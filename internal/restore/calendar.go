@@ -90,3 +90,5 @@ func (r *CalendarRestore) Run(ctx context.Context) error {
 	fmt.Printf("Restored %d events\n", restored)
 	return nil
 }
+
+func (r *CalendarRestore) SetDryRun(v bool) { r.DryRun = v }

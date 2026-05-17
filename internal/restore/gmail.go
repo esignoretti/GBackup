@@ -91,3 +91,5 @@ func (r *GmailRestore) Run(ctx context.Context) error {
 	fmt.Printf("Restored %d messages\n", restored)
 	return nil
 }
+
+func (r *GmailRestore) SetDryRun(v bool) { r.DryRun = v }

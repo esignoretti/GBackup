@@ -189,15 +189,18 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			}
 
 			if d.metaDB != nil {
-				d.metaDB.TrackItem(&metadata.Item{
+				if err := d.metaDB.TrackItem(&metadata.Item{
 					Service:    "drive",
 					User:       user,
 					ObjectKey:  objKey,
+					ItemPath:   f.Name,
 					ItemID:     f.Id,
 					Size:       int64(buf.Len()),
 					Checksum:   checksum,
 					ModifiedAt: modTime,
-				})
+				}); err != nil {
+					return count, fmt.Errorf("tracking %s: %w", f.Id, err)
+				}
 			}
 			count++
 		}
@@ -213,7 +216,9 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	}
 
 	if d.metaDB != nil {
-		d.metaDB.RecordBackup("drive", user, map[bool]string{true: "full", false: "incremental"}[full])
+		if err := d.metaDB.RecordBackup("drive", user, runType); err != nil {
+			return count, fmt.Errorf("recording backup: %w", err)
+		}
 	}
 	return count, nil
 }

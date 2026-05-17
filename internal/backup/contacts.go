@@ -144,7 +144,7 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 
 	for _, entry := range allEntries {
 		if c.metaDB != nil {
-			c.metaDB.TrackItem(&metadata.Item{
+			if err := c.metaDB.TrackItem(&metadata.Item{
 				Service:   "contacts",
 				User:      user,
 				ObjectKey: objKey,
@@ -152,12 +152,16 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 				ItemID:    entry.Name,
 				Size:      int64(len(entry.Data)),
 				Checksum:  entry.Name,
-			})
+			}); err != nil {
+				return 0, fmt.Errorf("tracking %s: %w", entry.Name, err)
+			}
 		}
 	}
 
 	if c.metaDB != nil {
-		c.metaDB.RecordBackup("contacts", user, map[bool]string{true: "full", false: "incremental"}[full])
+		if err := c.metaDB.RecordBackup("contacts", user, runType); err != nil {
+			return len(allEntries), fmt.Errorf("recording backup: %w", err)
+		}
 	}
 	return len(allEntries), nil
 }

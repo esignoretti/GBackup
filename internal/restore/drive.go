@@ -91,8 +91,12 @@ func (r *DriveRestore) Run(ctx context.Context) error {
 			return err
 		}
 
+		name := item.ItemPath
+		if name == "" {
+			name = extractFileName(item.ObjectKey)
+		}
 		f := &drive.File{
-			Name:    extractFileName(item.ObjectKey),
+			Name:    name,
 			Parents: []string{root.Id},
 		}
 		_, err = svc.Files.Create(f).Context(ctx).Media(gr).Do()
@@ -115,3 +119,5 @@ func extractFileName(key string) string {
 	}
 	return last
 }
+
+func (r *DriveRestore) SetDryRun(v bool) { r.DryRun = v }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/esignoretti/gbackup/internal/config"
@@ -12,6 +13,31 @@ import (
 	"github.com/esignoretti/gbackup/internal/storage"
 	"github.com/spf13/cobra"
 )
+
+var metaSnapshotRE = regexp.MustCompile(`^_meta/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.db\.gz$`)
+
+func pickLatestMeta(keys []string) (string, error) {
+	var bestKey string
+	var bestT time.Time
+	for _, k := range keys {
+		m := metaSnapshotRE.FindStringSubmatch(k)
+		if m == nil {
+			continue
+		}
+		t, err := time.Parse("2006-01-02T15-04-05", m[1])
+		if err != nil {
+			continue
+		}
+		if bestKey == "" || t.After(bestT) {
+			bestKey = k
+			bestT = t
+		}
+	}
+	if bestKey == "" {
+		return "", fmt.Errorf("no metadata snapshot found in _meta/ matching pattern YYYY-MM-DDTHH-MM-SS.db.gz")
+	}
+	return bestKey, nil
+}
 
 var metaBackupCmd = &cobra.Command{
 	Use:   "meta-backup",
@@ -68,10 +94,10 @@ var metaRestoreCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("listing metadata: %w", err)
 		}
-		if len(keys) == 0 {
-			return fmt.Errorf("no metadata snapshots found in S3")
+		latest, err := pickLatestMeta(keys)
+		if err != nil {
+			return err
 		}
-		latest := keys[len(keys)-1]
 
 		rc, err := store.Download(context.Background(), latest)
 		if err != nil {
@@ -81,7 +107,9 @@ var metaRestoreCmd = &cobra.Command{
 
 		home, _ := os.UserHomeDir()
 		dbDir := filepath.Join(home, ".gbackup")
-		os.MkdirAll(dbDir, 0700)
+		if err := os.MkdirAll(dbDir, 0700); err != nil {
+			return fmt.Errorf("creating db dir: %w", err)
+		}
 		dbPath := filepath.Join(dbDir, "meta.db")
 
 		tmpPath := filepath.Join(dbDir, "meta_restore.db.gz")
@@ -91,9 +119,13 @@ var metaRestoreCmd = &cobra.Command{
 		}
 		if _, err := tmp.ReadFrom(rc); err != nil {
 			tmp.Close()
+			os.Remove(tmpPath)
 			return err
 		}
-		tmp.Close()
+		if err := tmp.Close(); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
 		defer os.Remove(tmpPath)
 
 		if err := metadata.RestoreDB(tmpPath, dbPath); err != nil {

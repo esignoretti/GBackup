@@ -102,3 +102,5 @@ func (r *ContactsRestore) Run(ctx context.Context) error {
 	fmt.Printf("Restored %d contacts\n", restored)
 	return nil
 }
+
+func (r *ContactsRestore) SetDryRun(v bool) { r.DryRun = v }

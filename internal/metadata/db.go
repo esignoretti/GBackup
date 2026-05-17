@@ -184,16 +184,29 @@ func BackupDB(sourcePath, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("creating dest: %w", err)
 	}
-	defer dst.Close()
 
 	gw := gzip.NewWriter(dst)
-
-	_, err = io.Copy(gw, src)
-	if err != nil {
+	if _, err := io.Copy(gw, src); err != nil {
 		gw.Close()
-		return err
+		dst.Close()
+		os.Remove(destPath)
+		return fmt.Errorf("compressing: %w", err)
 	}
-	return gw.Close()
+	if err := gw.Close(); err != nil {
+		dst.Close()
+		os.Remove(destPath)
+		return fmt.Errorf("closing gzip writer: %w", err)
+	}
+	if err := dst.Sync(); err != nil {
+		dst.Close()
+		os.Remove(destPath)
+		return fmt.Errorf("syncing dest: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("closing dest: %w", err)
+	}
+	return nil
 }
 
 func RestoreDB(sourcePath, destPath string) error {
@@ -209,12 +222,34 @@ func RestoreDB(sourcePath, destPath string) error {
 	}
 	defer gr.Close()
 
-	dst, err := os.Create(destPath)
+	tmpPath := destPath + ".tmp"
+	tmp, err := os.Create(tmpPath)
 	if err != nil {
-		return fmt.Errorf("creating dest: %w", err)
+		return fmt.Errorf("creating temp: %w", err)
 	}
-	defer dst.Close()
+	if _, err := io.Copy(tmp, gr); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("decompressing: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("syncing temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("closing temp: %w", err)
+	}
 
-	_, err = io.Copy(dst, gr)
-	return err
+	if _, err := os.Stat(destPath); err == nil {
+		if err := os.Rename(destPath, destPath+".bak"); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("backing up existing db: %w", err)
+		}
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return fmt.Errorf("installing restored db: %w", err)
+	}
+	return nil
 }

@@ -238,7 +238,7 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		go func() {
 			defer uploadWg.Done()
 
-			n, err := g.uploadMonth(ctx, user, month, entries)
+			n, err := g.uploadMonth(ctx, user, month, entries, full)
 			if err != nil {
 				uploadMu.Lock()
 				if uploadErr == nil {
@@ -260,17 +260,39 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	}
 
 	if g.metaDB != nil {
-		g.metaDB.RecordBackup("gmail", user, map[bool]string{true: "full", false: "incremental"}[full])
+		if err := g.metaDB.RecordBackup("gmail", user, runType); err != nil {
+			return totalCount, fmt.Errorf("recording backup: %w", err)
+		}
 	}
 	return totalCount, nil
 }
 
-func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entries []archive.ArchiveEntry) (int, error) {
+func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entries []archive.ArchiveEntry, full bool) (int, error) {
 	objKey := storage.ObjectKey("gmail", user, fmt.Sprintf("%s.tar.gz", month))
 
-	archiveData, err := archive.Create(entries)
-	if err != nil {
-		return 0, fmt.Errorf("creating archive %s: %w", objKey, err)
+	var archiveData []byte
+	if !full {
+		existing, downloadErr := g.store.Download(ctx, objKey)
+		if downloadErr == nil {
+			data, appendErr := archive.AppendToArchive(existing, entries)
+			existing.Close()
+			if appendErr != nil {
+				return 0, fmt.Errorf("appending to archive %s: %w", objKey, appendErr)
+			}
+			archiveData = data
+		} else {
+			data, createErr := archive.Create(entries)
+			if createErr != nil {
+				return 0, fmt.Errorf("creating archive %s: %w", objKey, createErr)
+			}
+			archiveData = data
+		}
+	} else {
+		data, err := archive.Create(entries)
+		if err != nil {
+			return 0, fmt.Errorf("creating archive %s: %w", objKey, err)
+		}
+		archiveData = data
 	}
 
 	if err := g.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
@@ -283,7 +305,7 @@ func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entri
 
 	for _, entry := range entries {
 		if g.metaDB != nil {
-			g.metaDB.TrackItem(&metadata.Item{
+			if err := g.metaDB.TrackItem(&metadata.Item{
 				Service:   "gmail",
 				User:      user,
 				ObjectKey: objKey,
@@ -291,7 +313,9 @@ func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entri
 				ItemID:    entryNameToID(entry.Name),
 				Size:      int64(len(entry.Data)),
 				Checksum:  entry.Name,
-			})
+			}); err != nil {
+				return 0, fmt.Errorf("tracking %s: %w", entry.Name, err)
+			}
 		}
 	}
 	return len(entries), nil

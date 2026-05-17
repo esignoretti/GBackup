@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -166,5 +167,85 @@ func TestBackupAndRestoreDB(t *testing.T) {
 	items, _ := db2.ItemsByService("drive", "u@t.com")
 	if len(items) != 1 {
 		t.Fatal("restored DB should contain items")
+	}
+}
+
+func TestRestoreDBAtomicAndBackup(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "meta.db")
+
+	db, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TrackItem(&Item{Service: "drive", User: "old@t.com", ObjectKey: "k_old", ItemID: "i_old", ModifiedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	srcDB := filepath.Join(dir, "src.db")
+	db2, err := New(srcDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db2.TrackItem(&Item{Service: "drive", User: "new@t.com", ObjectKey: "k_new", ItemID: "i_new", ModifiedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	db2.Close()
+
+	gzPath := filepath.Join(dir, "src.db.gz")
+	if err := BackupDB(srcDB, gzPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestoreDB(gzPath, dbPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(dbPath + ".bak"); err != nil {
+		t.Fatalf("expected backup at %s.bak: %v", dbPath, err)
+	}
+
+	restored, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	items, _ := restored.ItemsByService("drive", "new@t.com")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 new item, got %d", len(items))
+	}
+}
+
+func TestRestoreDBTruncatedSourceLeavesOriginalIntact(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "meta.db")
+
+	db, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TrackItem(&Item{Service: "drive", User: "u@t.com", ObjectKey: "k1", ItemID: "i1", ModifiedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	bad := filepath.Join(dir, "bad.db.gz")
+	if err := os.WriteFile(bad, []byte("not-a-real-gzip"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestoreDB(bad, dbPath); err == nil {
+		t.Fatal("expected error on bad gzip")
+	}
+
+	db2, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("original db corrupted: %v", err)
+	}
+	defer db2.Close()
+	items, _ := db2.ItemsByService("drive", "u@t.com")
+	if len(items) != 1 {
+		t.Fatalf("expected original item to survive, got %d", len(items))
 	}
 }
