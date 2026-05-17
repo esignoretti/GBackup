@@ -9,14 +9,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	gconfig "github.com/esignoretti/gbackup/internal/config"
 )
 
 type Client struct {
-	client *s3.Client
-	bucket string
+	client   *s3.Client
+	uploader *manager.Uploader
+	bucket   string
 }
 
 func NewClient(cfg *gconfig.StorageConfig) (*Client, error) {
@@ -43,14 +45,20 @@ func NewClient(cfg *gconfig.StorageConfig) (*Client, error) {
 		})
 	}
 
+	client := s3.NewFromConfig(awsCfg, s3Opts...)
+	uploader := manager.NewUploader(client, func(u *manager.Uploader) {
+		u.PartSize = 8 * 1024 * 1024
+		u.Concurrency = 4
+	})
 	return &Client{
-		client: s3.NewFromConfig(awsCfg, s3Opts...),
-		bucket: cfg.Bucket,
+		client:   client,
+		uploader: uploader,
+		bucket:   cfg.Bucket,
 	}, nil
 }
 
 func (c *Client) Upload(ctx context.Context, key string, reader io.Reader) error {
-	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+	_, err := c.uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 		Body:   reader,

@@ -1,11 +1,11 @@
 package backup
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -158,42 +158,29 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 	for year, entries := range buckets {
 		objKey := storage.ObjectKey("calendar", user, fmt.Sprintf("%s.tar.gz", year))
 
-		var archiveData []byte
-		skipUpload := false
-		if !full {
-			existing, downloadErr := c.store.Download(ctx, objKey)
-			if downloadErr == nil {
-				data, appendErr := archive.AppendToArchive(existing, entries)
-				existing.Close()
-				if errors.Is(appendErr, archive.ErrNoChanges) {
-					skipUpload = true
-				} else if appendErr != nil {
-					return totalCount, fmt.Errorf("appending to archive %s: %w", objKey, appendErr)
-				} else {
-					archiveData = data
+		uploadErr := streamUpload(ctx, c.store, objKey, func(w io.Writer) error {
+			if !full {
+				existing, downloadErr := c.store.Download(ctx, objKey)
+				if downloadErr == nil {
+					err := archive.StreamMerge(existing, w, entries)
+					existing.Close()
+					return err
 				}
-			} else {
-				data, createErr := archive.Create(entries)
-				if createErr != nil {
-					return totalCount, fmt.Errorf("creating archive %s: %w", objKey, createErr)
+			}
+			aw := archive.NewWriter(w)
+			for _, e := range entries {
+				if err := aw.Append(e); err != nil {
+					return err
 				}
-				archiveData = data
 			}
-		} else {
-			data, createErr := archive.Create(entries)
-			if createErr != nil {
-				return totalCount, fmt.Errorf("creating archive %s: %w", objKey, createErr)
-			}
-			archiveData = data
+			return aw.Close()
+		})
+		noChanges := errors.Is(uploadErr, archive.ErrNoChanges)
+		if uploadErr != nil && !noChanges {
+			return totalCount, fmt.Errorf("writing archive %s: %w", objKey, uploadErr)
 		}
 
-		if !skipUpload {
-			if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
-				return totalCount, fmt.Errorf("uploading %s: %w", objKey, err)
-			}
-		}
-
-		if c.progress != nil {
+		if c.progress != nil && !noChanges {
 			c.progress.Upload(objKey)
 		}
 

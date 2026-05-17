@@ -1,11 +1,11 @@
 package backup
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -139,42 +139,29 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 
 	objKey := storage.ObjectKey("contacts", user, "all.tar.gz")
 
-	var archiveData []byte
-	skipUpload := false
-	if !full {
-		existing, downloadErr := c.store.Download(ctx, objKey)
-		if downloadErr == nil {
-			data, appendErr := archive.AppendToArchive(existing, allEntries)
-			existing.Close()
-			if errors.Is(appendErr, archive.ErrNoChanges) {
-				skipUpload = true
-			} else if appendErr != nil {
-				return 0, fmt.Errorf("appending to archive: %w", appendErr)
-			} else {
-				archiveData = data
+	uploadErr := streamUpload(ctx, c.store, objKey, func(w io.Writer) error {
+		if !full {
+			existing, downloadErr := c.store.Download(ctx, objKey)
+			if downloadErr == nil {
+				err := archive.StreamMerge(existing, w, allEntries)
+				existing.Close()
+				return err
 			}
-		} else {
-			data, createErr := archive.Create(allEntries)
-			if createErr != nil {
-				return 0, fmt.Errorf("creating archive: %w", createErr)
+		}
+		aw := archive.NewWriter(w)
+		for _, e := range allEntries {
+			if err := aw.Append(e); err != nil {
+				return err
 			}
-			archiveData = data
 		}
-	} else {
-		data, createErr := archive.Create(allEntries)
-		if createErr != nil {
-			return 0, fmt.Errorf("creating archive: %w", createErr)
-		}
-		archiveData = data
+		return aw.Close()
+	})
+	noChanges := errors.Is(uploadErr, archive.ErrNoChanges)
+	if uploadErr != nil && !noChanges {
+		return 0, fmt.Errorf("writing archive %s: %w", objKey, uploadErr)
 	}
 
-	if !skipUpload {
-		if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
-			return 0, fmt.Errorf("uploading %s: %w", objKey, err)
-		}
-	}
-
-	if c.progress != nil {
+	if c.progress != nil && !noChanges {
 		c.progress.Upload(objKey)
 	}
 
