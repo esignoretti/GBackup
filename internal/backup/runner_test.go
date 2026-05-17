@@ -13,7 +13,7 @@ func TestNewRunner(t *testing.T) {
 
 func TestRunnerNeedsInit(t *testing.T) {
 	r := NewRunner(&RunnerConfig{})
-	err := r.Run(nil, false)
+	_, err := r.Run(nil, false)
 	if err == nil {
 		t.Fatal("expected error without init")
 	}

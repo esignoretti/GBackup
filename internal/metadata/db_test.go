@@ -217,6 +217,27 @@ func TestRestoreDBAtomicAndBackup(t *testing.T) {
 	}
 }
 
+func TestStartCompleteBackup(t *testing.T) {
+	dir := t.TempDir()
+	db, err := New(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	id, err := db.StartBackup("drive", "u@t.com", "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == 0 {
+		t.Fatal("expected nonzero id")
+	}
+
+	if err := db.CompleteBackup(id); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRestoreDBTruncatedSourceLeavesOriginalIntact(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "meta.db")

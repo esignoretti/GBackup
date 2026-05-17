@@ -2,6 +2,7 @@ package archive
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -127,5 +128,37 @@ func TestArchiveEntry_NameValidation(t *testing.T) {
 	_, err := Create(entries)
 	if err == nil || !strings.Contains(err.Error(), "invalid entry name") {
 		t.Fatalf("expected error for path traversal, got: %v", err)
+	}
+}
+
+func TestValidateNameAllowsDoubleDotInFilename(t *testing.T) {
+	good := []string{"foo..bar", "..hidden", "a.b..c.txt"}
+	for _, n := range good {
+		_, err := Create([]ArchiveEntry{{Name: n, Data: []byte("ok")}})
+		if err != nil {
+			t.Errorf("%q rejected: %v", n, err)
+		}
+	}
+}
+
+func TestValidateNameRejectsTraversal(t *testing.T) {
+	bad := []string{"../escape.txt", "a/../b", "/abs.txt", "../../foo"}
+	for _, n := range bad {
+		_, err := Create([]ArchiveEntry{{Name: n, Data: []byte("bad")}})
+		if err == nil {
+			t.Errorf("%q accepted, want error", n)
+		}
+	}
+}
+
+func TestAppendToArchive_NoChangeReturnsSentinel(t *testing.T) {
+	orig := []ArchiveEntry{{Name: "a.txt", Data: []byte("same")}}
+	data, err := Create(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = AppendToArchive(bytes.NewReader(data), []ArchiveEntry{{Name: "a.txt", Data: []byte("same")}})
+	if !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("expected ErrNoChanges, got %v", err)
 	}
 }

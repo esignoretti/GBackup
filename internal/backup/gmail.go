@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -85,6 +86,15 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	runType := map[bool]string{true: "full", false: "incremental"}[full]
 	if g.progress != nil {
 		g.progress.Service("gmail", user, runType)
+	}
+
+	var runID int64
+	if g.metaDB != nil {
+		id, err := g.metaDB.StartBackup("gmail", user, runType)
+		if err != nil {
+			return 0, fmt.Errorf("recording backup start: %w", err)
+		}
+		runID = id
 	}
 
 	svc, err := g.gmailServiceForUser(ctx, user)
@@ -233,9 +243,9 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		return totalCount, uploadErr
 	}
 
-	if g.metaDB != nil {
-		if err := g.metaDB.RecordBackup("gmail", user, runType); err != nil {
-			return totalCount, fmt.Errorf("recording backup: %w", err)
+	if g.metaDB != nil && runID != 0 {
+		if err := g.metaDB.CompleteBackup(runID); err != nil {
+			return totalCount, fmt.Errorf("completing backup record: %w", err)
 		}
 	}
 	return totalCount, nil
@@ -245,15 +255,19 @@ func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entri
 	objKey := storage.ObjectKey("gmail", user, fmt.Sprintf("%s.tar.gz", month))
 
 	var archiveData []byte
+	skipUpload := false
 	if !full {
 		existing, downloadErr := g.store.Download(ctx, objKey)
 		if downloadErr == nil {
 			data, appendErr := archive.AppendToArchive(existing, entries)
 			existing.Close()
-			if appendErr != nil {
+			if errors.Is(appendErr, archive.ErrNoChanges) {
+				skipUpload = true
+			} else if appendErr != nil {
 				return 0, fmt.Errorf("appending to archive %s: %w", objKey, appendErr)
+			} else {
+				archiveData = data
 			}
-			archiveData = data
 		} else {
 			data, createErr := archive.Create(entries)
 			if createErr != nil {
@@ -269,8 +283,10 @@ func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entri
 		archiveData = data
 	}
 
-	if err := g.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
-		return 0, fmt.Errorf("uploading %s: %w", objKey, err)
+	if !skipUpload {
+		if err := g.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
+			return 0, fmt.Errorf("uploading %s: %w", objKey, err)
+		}
 	}
 
 	if g.progress != nil {

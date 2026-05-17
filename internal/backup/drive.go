@@ -137,6 +137,15 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		d.progress.Service("drive", user, runType)
 	}
 
+	var runID int64
+	if d.metaDB != nil {
+		id, err := d.metaDB.StartBackup("drive", user, runType)
+		if err != nil {
+			return 0, fmt.Errorf("recording backup start: %w", err)
+		}
+		runID = id
+	}
+
 	var count int
 	pageToken := ""
 	var fetched int
@@ -242,9 +251,9 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		d.progress.FetchDone("files", fetched)
 	}
 
-	if d.metaDB != nil {
-		if err := d.metaDB.RecordBackup("drive", user, runType); err != nil {
-			return count, fmt.Errorf("recording backup: %w", err)
+	if d.metaDB != nil && runID != 0 {
+		if err := d.metaDB.CompleteBackup(runID); err != nil {
+			return count, fmt.Errorf("completing backup record: %w", err)
 		}
 	}
 	return count, nil

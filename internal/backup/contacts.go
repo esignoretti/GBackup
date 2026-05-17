@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -58,6 +59,15 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 	runType := map[bool]string{true: "full", false: "incremental"}[full]
 	if c.progress != nil {
 		c.progress.Service("contacts", user, runType)
+	}
+
+	var runID int64
+	if c.metaDB != nil {
+		id, err := c.metaDB.StartBackup("contacts", user, runType)
+		if err != nil {
+			return 0, fmt.Errorf("recording backup start: %w", err)
+		}
+		runID = id
 	}
 
 	svc, err := people.NewService(ctx,
@@ -130,28 +140,38 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 	objKey := storage.ObjectKey("contacts", user, "all.tar.gz")
 
 	var archiveData []byte
+	skipUpload := false
 	if !full {
-		existing, err := c.store.Download(ctx, objKey)
-		if err == nil {
-			archiveData, err = archive.AppendToArchive(existing, allEntries)
-			if err != nil {
-				return 0, fmt.Errorf("appending to archive: %w", err)
+		existing, downloadErr := c.store.Download(ctx, objKey)
+		if downloadErr == nil {
+			data, appendErr := archive.AppendToArchive(existing, allEntries)
+			existing.Close()
+			if errors.Is(appendErr, archive.ErrNoChanges) {
+				skipUpload = true
+			} else if appendErr != nil {
+				return 0, fmt.Errorf("appending to archive: %w", appendErr)
+			} else {
+				archiveData = data
 			}
 		} else {
-			archiveData, err = archive.Create(allEntries)
-			if err != nil {
-				return 0, fmt.Errorf("creating archive: %w", err)
+			data, createErr := archive.Create(allEntries)
+			if createErr != nil {
+				return 0, fmt.Errorf("creating archive: %w", createErr)
 			}
+			archiveData = data
 		}
 	} else {
-		archiveData, err = archive.Create(allEntries)
-		if err != nil {
-			return 0, fmt.Errorf("creating archive: %w", err)
+		data, createErr := archive.Create(allEntries)
+		if createErr != nil {
+			return 0, fmt.Errorf("creating archive: %w", createErr)
 		}
+		archiveData = data
 	}
 
-	if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
-		return 0, fmt.Errorf("uploading %s: %w", objKey, err)
+	if !skipUpload {
+		if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
+			return 0, fmt.Errorf("uploading %s: %w", objKey, err)
+		}
 	}
 
 	if c.progress != nil {
@@ -175,9 +195,9 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 		}
 	}
 
-	if c.metaDB != nil {
-		if err := c.metaDB.RecordBackup("contacts", user, runType); err != nil {
-			return len(allEntries), fmt.Errorf("recording backup: %w", err)
+	if c.metaDB != nil && runID != 0 {
+		if err := c.metaDB.CompleteBackup(runID); err != nil {
+			return len(allEntries), fmt.Errorf("completing backup record: %w", err)
 		}
 	}
 	return len(allEntries), nil

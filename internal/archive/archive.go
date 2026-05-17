@@ -4,9 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
 )
@@ -49,6 +50,10 @@ func Create(entries []ArchiveEntry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ErrNoChanges is returned by AppendToArchive when no entries differ from the
+// existing archive — callers can skip the upload entirely.
+var ErrNoChanges = errors.New("archive: no changes to append")
+
 func AppendToArchive(existing io.Reader, entries []ArchiveEntry) ([]byte, error) {
 	gr, err := gzip.NewReader(existing)
 	if err != nil {
@@ -73,8 +78,20 @@ func AppendToArchive(existing io.Reader, entries []ArchiveEntry) ([]byte, error)
 		existingByName[hdr.Name] = data
 	}
 
+	if len(entries) == 0 {
+		return nil, ErrNoChanges
+	}
+
+	changed := false
 	for _, e := range entries {
+		old, present := existingByName[e.Name]
+		if !present || !bytes.Equal(old, e.Data) {
+			changed = true
+		}
 		existingByName[e.Name] = e.Data
+	}
+	if !changed {
+		return nil, ErrNoChanges
 	}
 
 	all := make([]ArchiveEntry, 0, len(existingByName))
@@ -121,12 +138,20 @@ func Read(r io.Reader, fn func(ArchiveEntry) error) error {
 }
 
 func validateName(name string) error {
-	clean := filepath.Clean(name)
-	if clean != name || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "..") {
-		return fmt.Errorf("invalid entry name: %q", name)
+	if name == "" {
+		return fmt.Errorf("invalid entry name: empty")
 	}
-	if strings.Contains(name, "..") {
-		return fmt.Errorf("invalid entry name (path traversal): %q", name)
+	if strings.HasPrefix(name, "/") {
+		return fmt.Errorf("invalid entry name (absolute): %q", name)
+	}
+	clean := path.Clean(name)
+	if clean != name {
+		return fmt.Errorf("invalid entry name (non-canonical): %q", name)
+	}
+	for _, seg := range strings.Split(name, "/") {
+		if seg == ".." {
+			return fmt.Errorf("invalid entry name (path traversal): %q", name)
+		}
 	}
 	return nil
 }

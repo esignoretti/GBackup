@@ -57,8 +57,12 @@ var backupCmd = &cobra.Command{
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		if err := runner.Run(ctx, full); err != nil {
+		result, err := runner.Run(ctx, full)
+		if err != nil {
 			return fmt.Errorf("backup failed: %w", err)
+		}
+		if !result.AnyRan() {
+			return fmt.Errorf("backup failed: all services were skipped (check Google Cloud API enablement)")
 		}
 
 		metaTS := time.Now().UTC().Format("2006-01-02T15-04-05") + ".db.gz"

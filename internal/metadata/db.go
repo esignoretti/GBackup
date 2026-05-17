@@ -120,32 +120,44 @@ func (d *DB) IsModified(service, user, itemID, checksum string) (bool, error) {
 
 func (d *DB) LastBackupTime(service, user string) (time.Time, error) {
 	row := d.db.QueryRow(`
-		SELECT MAX(completed_at) FROM backup_runs
-		WHERE service = ? AND user_email = ?`,
+		SELECT completed_at FROM backup_runs
+		WHERE service = ? AND user_email = ? AND completed_at IS NOT NULL
+		ORDER BY completed_at DESC LIMIT 1`,
 		service, user,
 	)
-	var s sql.NullString
-	err := row.Scan(&s)
-	if err != nil {
-		return time.Time{}, err
-	}
-	if !s.Valid || s.String == "" {
-		return time.Time{}, sql.ErrNoRows
-	}
-	t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", s.String)
-	if err != nil {
+	var t time.Time
+	if err := row.Scan(&t); err != nil {
 		return time.Time{}, err
 	}
 	return t, nil
 }
 
-func (d *DB) RecordBackup(service, user, runType string) error {
-	_, err := d.db.Exec(`
-		INSERT INTO backup_runs (service, user_email, run_type, started_at, completed_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		service, user, runType, time.Now(), time.Now(),
+func (d *DB) StartBackup(service, user, runType string) (int64, error) {
+	res, err := d.db.Exec(`
+		INSERT INTO backup_runs (service, user_email, run_type, started_at)
+		VALUES (?, ?, ?, ?)`,
+		service, user, runType, time.Now(),
 	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (d *DB) CompleteBackup(id int64) error {
+	_, err := d.db.Exec(`UPDATE backup_runs SET completed_at = ? WHERE id = ?`, time.Now(), id)
 	return err
+}
+
+// RecordBackup is kept as a convenience wrapper: it starts and immediately completes
+// a backup_runs row. Prefer StartBackup + CompleteBackup so that crashes leave a
+// NULL completed_at, which surfaces partial runs.
+func (d *DB) RecordBackup(service, user, runType string) error {
+	id, err := d.StartBackup(service, user, runType)
+	if err != nil {
+		return err
+	}
+	return d.CompleteBackup(id)
 }
 
 func (d *DB) ItemsByService(service, user string) ([]*Item, error) {

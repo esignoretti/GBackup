@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -32,45 +33,71 @@ func NewRunner(cfg *RunnerConfig) *Runner {
 	return &Runner{cfg: cfg}
 }
 
-func (r *Runner) Run(ctx context.Context, full bool) error {
+type ServiceResult struct {
+	Skipped    bool
+	SkipReason string
+	Err        error
+}
+
+type RunResult struct {
+	Services map[string]ServiceResult
+}
+
+// AnyRan reports whether at least one service ran to completion without error.
+func (r RunResult) AnyRan() bool {
+	for _, s := range r.Services {
+		if !s.Skipped && s.Err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// FirstError returns the first non-nil per-service error, if any.
+func (r RunResult) FirstError() error {
+	for _, s := range r.Services {
+		if s.Err != nil {
+			return s.Err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) Run(ctx context.Context, full bool) (RunResult, error) {
+	result := RunResult{Services: map[string]ServiceResult{}}
 	if r.cfg == nil || r.cfg.Config == nil {
-		return fmt.Errorf("runner not initialized: missing config")
+		return result, fmt.Errorf("runner not initialized: missing config")
 	}
 	if r.cfg.Store == nil {
-		return fmt.Errorf("runner not initialized: missing storage client")
+		return result, fmt.Errorf("runner not initialized: missing storage client")
 	}
 
 	users := r.resolveUsers(ctx)
 
+	var mu sync.Mutex
 	var wg sync.WaitGroup
-	errs := make(chan error, len(r.cfg.Config.Services))
-
 	for _, svc := range r.cfg.Config.Services {
 		svc := svc
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			err := r.runService(ctx, svc, users, full)
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil && gws.IsServiceDisabled(err) {
-				fmt.Printf("  %s: API not enabled in Google Cloud project, skipping\n", svc)
+				result.Services[svc] = ServiceResult{Skipped: true, SkipReason: "API not enabled"}
+				fmt.Fprintf(os.Stderr, "  %s: API not enabled in Google Cloud project, skipping\n", svc)
 				return
 			}
 			if err != nil {
-				errs <- fmt.Errorf("%s: %w", svc, err)
+				result.Services[svc] = ServiceResult{Err: fmt.Errorf("%s: %w", svc, err)}
+				return
 			}
+			result.Services[svc] = ServiceResult{}
 		}()
 	}
-
 	wg.Wait()
-	close(errs)
-
-	var firstErr error
-	for err := range errs {
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
+	return result, result.FirstError()
 }
 
 func (r *Runner) runService(ctx context.Context, service string, users []string, full bool) error {

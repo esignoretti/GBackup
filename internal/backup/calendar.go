@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -58,6 +59,15 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 	runType := map[bool]string{true: "full", false: "incremental"}[full]
 	if c.progress != nil {
 		c.progress.Service("calendar", user, runType)
+	}
+
+	var runID int64
+	if c.metaDB != nil {
+		id, err := c.metaDB.StartBackup("calendar", user, runType)
+		if err != nil {
+			return 0, fmt.Errorf("recording backup start: %w", err)
+		}
+		runID = id
 	}
 
 	svc, err := calendar.NewService(ctx,
@@ -147,28 +157,38 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 		objKey := storage.ObjectKey("calendar", user, fmt.Sprintf("%s.tar.gz", year))
 
 		var archiveData []byte
+		skipUpload := false
 		if !full {
-			existing, err := c.store.Download(ctx, objKey)
-			if err == nil {
-				archiveData, err = archive.AppendToArchive(existing, entries)
-				if err != nil {
-					return totalCount, fmt.Errorf("appending to archive %s: %w", objKey, err)
+			existing, downloadErr := c.store.Download(ctx, objKey)
+			if downloadErr == nil {
+				data, appendErr := archive.AppendToArchive(existing, entries)
+				existing.Close()
+				if errors.Is(appendErr, archive.ErrNoChanges) {
+					skipUpload = true
+				} else if appendErr != nil {
+					return totalCount, fmt.Errorf("appending to archive %s: %w", objKey, appendErr)
+				} else {
+					archiveData = data
 				}
 			} else {
-				archiveData, err = archive.Create(entries)
-				if err != nil {
-					return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
+				data, createErr := archive.Create(entries)
+				if createErr != nil {
+					return totalCount, fmt.Errorf("creating archive %s: %w", objKey, createErr)
 				}
+				archiveData = data
 			}
 		} else {
-			archiveData, err = archive.Create(entries)
-			if err != nil {
-				return totalCount, fmt.Errorf("creating archive %s: %w", objKey, err)
+			data, createErr := archive.Create(entries)
+			if createErr != nil {
+				return totalCount, fmt.Errorf("creating archive %s: %w", objKey, createErr)
 			}
+			archiveData = data
 		}
 
-		if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
-			return totalCount, fmt.Errorf("uploading %s: %w", objKey, err)
+		if !skipUpload {
+			if err := c.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
+				return totalCount, fmt.Errorf("uploading %s: %w", objKey, err)
+			}
 		}
 
 		if c.progress != nil {
@@ -194,9 +214,9 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 		}
 	}
 
-	if c.metaDB != nil {
-		if err := c.metaDB.RecordBackup("calendar", user, runType); err != nil {
-			return totalCount, fmt.Errorf("recording backup: %w", err)
+	if c.metaDB != nil && runID != 0 {
+		if err := c.metaDB.CompleteBackup(runID); err != nil {
+			return totalCount, fmt.Errorf("completing backup record: %w", err)
 		}
 	}
 	return totalCount, nil
