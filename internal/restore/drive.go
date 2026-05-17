@@ -115,7 +115,12 @@ func extractFileName(key string) string {
 	parts := strings.Split(key, "/")
 	last := parts[len(parts)-1]
 	if idx := strings.LastIndex(last, "_v"); idx >= 0 {
-		last = last[:idx]
+		rest := last[idx+2:]
+		if dot := strings.Index(rest, "."); dot >= 0 {
+			last = last[:idx] + rest[dot:]
+		} else {
+			last = last[:idx]
+		}
 	}
 	return last
 }

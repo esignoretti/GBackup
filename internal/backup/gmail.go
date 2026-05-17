@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -122,7 +121,7 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		resp, err := call.Do()
 		listCancel()
 		if err != nil {
-			if isServiceDisabled(err) {
+			if gws.IsServiceDisabled(err) {
 				fmt.Printf("  gmail: API not enabled for %s, skipping\n", user)
 				return 0, nil
 			}
@@ -296,17 +295,18 @@ func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entri
 }
 
 func fetchWithRetry(ctx context.Context, svc *gmail.Service, user, id string) (*gmail.Message, error) {
+	const baseBackoff = 200 * time.Millisecond
+	const maxBackoff = 5 * time.Second
+
 	var msg *gmail.Message
 	var err error
 	for attempt := 0; attempt < gmailMaxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(100+rand.Intn(400)) * time.Millisecond
-			for i := 0; i < attempt-1; i++ {
-				backoff *= 2
-				if backoff > 5*time.Second {
-					backoff = 5 * time.Second
-				}
+			backoff := baseBackoff << (attempt - 1)
+			if backoff > maxBackoff {
+				backoff = maxBackoff
 			}
+			backoff += time.Duration(rand.Int63n(int64(backoff)))
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -319,37 +319,12 @@ func fetchWithRetry(ctx context.Context, svc *gmail.Service, user, id string) (*
 		if err == nil {
 			return msg, nil
 		}
-		if isRetryableError(err) {
+		if gws.IsRetryable(err) {
 			continue
 		}
 		return nil, fmt.Errorf("getting message %s: %w", id, err)
 	}
 	return nil, fmt.Errorf("getting message %s after %d retries: %w", id, gmailMaxRetries, err)
-}
-
-func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "rateLimitExceeded") ||
-		strings.Contains(msg, "Quota exceeded") ||
-		strings.Contains(msg, "RATE_LIMIT_EXCEEDED") ||
-		strings.Contains(msg, "connection reset by peer") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "deadline") ||
-		strings.Contains(msg, "TemporaryRedirect") ||
-		strings.Contains(msg, "internal error") ||
-		strings.Contains(msg, "500") ||
-		strings.Contains(msg, "503")
-}
-
-func isServiceDisabled(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "SERVICE_DISABLED") ||
-		strings.Contains(msg, "accessNotConfigured") ||
-		strings.Contains(msg, "not been used in project")
 }
 
 func messageMonth(msg *gmail.Message) string {

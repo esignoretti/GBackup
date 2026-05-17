@@ -77,14 +77,29 @@ func (d *DriveBackup) initDriveService(ctx context.Context) error {
 	return nil
 }
 
+const driveMaxRetries = 3
+
+// driveExportMap maps Google Docs Editors MIME types to the export MIME
+// and the file extension to append to the object key.
+var driveExportMap = map[string]struct {
+	exportMIME string
+	ext        string
+}{
+	"application/vnd.google-apps.document":     {"application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"},
+	"application/vnd.google-apps.spreadsheet":  {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"},
+	"application/vnd.google-apps.presentation": {"application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"},
+	"application/vnd.google-apps.drawing":      {"image/png", ".png"},
+}
+
 func mimeCategory(mime string) string {
+	if mime == "application/vnd.google-apps.folder" {
+		return "folder"
+	}
+	if _, ok := driveExportMap[mime]; ok {
+		return "google-doc"
+	}
 	if strings.HasPrefix(mime, "application/vnd.google-apps") {
-		switch mime {
-		case "application/vnd.google-apps.folder":
-			return "folder"
-		default:
-			return "google-doc"
-		}
+		return "non-exportable"
 	}
 	return "binary"
 }
@@ -150,40 +165,50 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			if category == "folder" {
 				continue
 			}
+			if category == "non-exportable" {
+				fmt.Printf("  drive: skipping non-exportable %s (%s)\n", f.Name, f.MimeType)
+				continue
+			}
 
 			checksum := f.Md5Checksum
 			modTime, err := time.Parse(time.RFC3339, f.ModifiedTime)
 			if err != nil {
-				return count, fmt.Errorf("parsing modified time for %s: %w", f.Id, err)
+				fmt.Printf("  drive: skipping %s (bad modifiedTime %q): %v\n", f.Name, f.ModifiedTime, err)
+				continue
 			}
 
 			if !full && d.metaDB != nil {
-				modified, err := d.metaDB.IsModified("drive", user, f.Id, checksum)
-				if err == nil && !modified {
+				modified, isModErr := d.metaDB.IsModified("drive", user, f.Id, checksum)
+				if isModErr != nil {
+					fmt.Printf("  drive: warning: IsModified failed for %s: %v (re-uploading)\n", f.Id, isModErr)
+				} else if !modified {
 					continue
 				}
 			}
 
-			content, err := d.downloadFile(ctx, f.Id, category)
+			content, ext, err := d.downloadFileRetry(ctx, f, category)
 			if err != nil {
-				return count, fmt.Errorf("downloading %s: %w", f.Name, err)
+				fmt.Printf("  drive: skipping %s (%s): %v\n", f.Name, f.Id, err)
+				continue
 			}
 			fetched++
 
 			version := f.Version
-			objKey := storage.ObjectKey("drive", user, fmt.Sprintf("files/%s_v%d", f.Id, version))
+			objKey := storage.ObjectKey("drive", user, fmt.Sprintf("files/%s_v%d%s", f.Id, version, ext))
 
 			var buf bytes.Buffer
 			gw := gzip.NewWriter(&buf)
 			_, copyErr := io.Copy(gw, content)
 			content.Close()
 			closeErr := gw.Close()
-			if err := errors.Join(copyErr, closeErr); err != nil {
-				return count, fmt.Errorf("compression failed: %w", err)
+			if joinedErr := errors.Join(copyErr, closeErr); joinedErr != nil {
+				fmt.Printf("  drive: compression failed for %s: %v\n", f.Name, joinedErr)
+				continue
 			}
 
 			if err := d.store.Upload(ctx, objKey, bytes.NewReader(buf.Bytes())); err != nil {
-				return count, fmt.Errorf("uploading %s: %w", objKey, err)
+				fmt.Printf("  drive: upload failed for %s: %v\n", objKey, err)
+				continue
 			}
 
 			if d.progress != nil {
@@ -225,17 +250,49 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	return count, nil
 }
 
-func (d *DriveBackup) downloadFile(ctx context.Context, fileID, category string) (io.ReadCloser, error) {
+func (d *DriveBackup) downloadFile(ctx context.Context, file *drive.File, category string) (io.ReadCloser, string, error) {
 	if category == "google-doc" {
-		resp, err := d.driveSvc.Files.Export(fileID, "application/pdf").Context(ctx).Download()
-		if err != nil {
-			return nil, err
+		entry, ok := driveExportMap[file.MimeType]
+		if !ok {
+			return nil, "", fmt.Errorf("no export mapping for %s", file.MimeType)
 		}
-		return resp.Body, nil
+		resp, err := d.driveSvc.Files.Export(file.Id, entry.exportMIME).Context(ctx).Download()
+		if err != nil {
+			return nil, "", err
+		}
+		return resp.Body, entry.ext, nil
 	}
-	resp, err := d.driveSvc.Files.Get(fileID).Context(ctx).SupportsAllDrives(true).Download()
+	resp, err := d.driveSvc.Files.Get(file.Id).Context(ctx).SupportsAllDrives(true).Download()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return resp.Body, nil
+	return resp.Body, "", nil
+}
+
+func (d *DriveBackup) downloadFileRetry(ctx context.Context, file *drive.File, category string) (io.ReadCloser, string, error) {
+	const base = 200 * time.Millisecond
+	const maxDelay = 5 * time.Second
+	var lastErr error
+	for attempt := 0; attempt < driveMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := base << (attempt - 1)
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, "", ctx.Err()
+			}
+		}
+		rc, ext, err := d.downloadFile(ctx, file, category)
+		if err == nil {
+			return rc, ext, nil
+		}
+		lastErr = err
+		if !gws.IsRetryable(err) {
+			return nil, "", err
+		}
+	}
+	return nil, "", fmt.Errorf("download failed after %d retries: %w", driveMaxRetries, lastErr)
 }

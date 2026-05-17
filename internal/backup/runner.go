@@ -51,7 +51,7 @@ func (r *Runner) Run(ctx context.Context, full bool) error {
 		go func() {
 			defer wg.Done()
 			err := r.runService(ctx, svc, users, full)
-			if err != nil && isServiceDisabled(err) {
+			if err != nil && gws.IsServiceDisabled(err) {
 				fmt.Printf("  %s: API not enabled in Google Cloud project, skipping\n", svc)
 				return
 			}
