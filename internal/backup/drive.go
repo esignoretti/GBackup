@@ -126,8 +126,9 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	pageToken := ""
 	var fetched int
 	for {
+		listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
 		call := d.driveSvc.Files.List().
-			Context(ctx).
+			Context(listCtx).
 			Corpora("allDrives").
 			IncludeItemsFromAllDrives(true).
 			SupportsAllDrives(true).
@@ -138,6 +139,7 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			call.PageToken(pageToken)
 		}
 		fileList, err := call.Do()
+		listCancel()
 		if err != nil {
 			return count, fmt.Errorf("listing files: %w", err)
 		}

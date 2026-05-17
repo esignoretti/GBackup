@@ -73,8 +73,9 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 	var fetched int
 	pageToken := ""
 	for {
+		listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
 		call := svc.Events.List("primary").
-			Context(ctx).
+			Context(listCtx).
 			SingleEvents(true).
 			MaxResults(2500).
 			ShowDeleted(false).
@@ -83,6 +84,7 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 			call.PageToken(pageToken)
 		}
 		resp, err := call.Do()
+		listCancel()
 		if err != nil {
 			return 0, fmt.Errorf("listing events: %w", err)
 		}

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/esignoretti/gbackup/internal/backup"
@@ -53,7 +55,8 @@ var backupCmd = &cobra.Command{
 			},
 		})
 
-		ctx := context.Background()
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
 		if err := runner.Run(ctx, full); err != nil {
 			return fmt.Errorf("backup failed: %w", err)
 		}

@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const perServiceUserConcurrency = 5
+
 type RunnerConfig struct {
 	Config   *config.Config
 	Store    *storage.Client
@@ -48,7 +50,7 @@ func (r *Runner) Run(ctx context.Context, full bool) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := r.runService(context.Background(), svc, users, full)
+			err := r.runService(ctx, svc, users, full)
 			if err != nil && isServiceDisabled(err) {
 				fmt.Printf("  %s: API not enabled in Google Cloud project, skipping\n", svc)
 				return
@@ -90,6 +92,7 @@ func (r *Runner) runService(ctx context.Context, service string, users []string,
 
 func (r *Runner) runDriveBackup(ctx context.Context, users []string, full bool) error {
 	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(perServiceUserConcurrency)
 	for _, user := range users {
 		user := user
 		g.Go(func() error {
@@ -109,6 +112,7 @@ func (r *Runner) runDriveBackup(ctx context.Context, users []string, full bool) 
 
 func (r *Runner) runContactsBackup(ctx context.Context, users []string, full bool) error {
 	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(perServiceUserConcurrency)
 	for _, user := range users {
 		user := user
 		g.Go(func() error {
@@ -128,6 +132,7 @@ func (r *Runner) runContactsBackup(ctx context.Context, users []string, full boo
 
 func (r *Runner) runCalendarBackup(ctx context.Context, users []string, full bool) error {
 	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(perServiceUserConcurrency)
 	for _, user := range users {
 		user := user
 		g.Go(func() error {
@@ -146,17 +151,23 @@ func (r *Runner) runCalendarBackup(ctx context.Context, users []string, full boo
 }
 
 func (r *Runner) runGmailBackup(ctx context.Context, users []string, full bool) error {
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(perServiceUserConcurrency)
 	for _, user := range users {
-		gb, err := newGmailBackup(r.cfg)
-		if err != nil {
-			return err
-		}
-		_, err = gb.BackupUser(ctx, user, full)
-		if err != nil {
-			return fmt.Errorf("gmail backup for %s: %w", user, err)
-		}
+		user := user
+		g.Go(func() error {
+			gb, err := newGmailBackup(r.cfg)
+			if err != nil {
+				return err
+			}
+			_, err = gb.BackupUser(ctx, user, full)
+			if err != nil {
+				return fmt.Errorf("gmail backup for %s: %w", user, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 func newDriveBackup(cfg *RunnerConfig) (*DriveBackup, error) {

@@ -17,6 +17,7 @@ import (
 	"github.com/esignoretti/gbackup/internal/progress"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"golang.org/x/oauth2/google"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
@@ -147,56 +148,30 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	buckets := make(map[string][]archive.ArchiveEntry)
 	var mu sync.Mutex
 	var fetched int
-	var fetchErr error
-	var fetchErrMu sync.Mutex
 
-	sem := make(chan struct{}, gmailConcurrency)
-	var wg sync.WaitGroup
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(gmailConcurrency)
 
 	for _, id := range allMsgIDs {
 		id := id
-		sem <- struct{}{}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			if err := limiter.Wait(ctx); err != nil {
-				fetchErrMu.Lock()
-				if fetchErr == nil {
-					fetchErr = fmt.Errorf("rate limiter: %w", err)
-				}
-				fetchErrMu.Unlock()
-				return
+		eg.Go(func() error {
+			if err := limiter.Wait(egCtx); err != nil {
+				return fmt.Errorf("rate limiter: %w", err)
 			}
-
-			msg, err := fetchWithRetry(ctx, svc, user, id)
+			msg, err := fetchWithRetry(egCtx, svc, user, id)
 			if err != nil {
-				fetchErrMu.Lock()
-				if fetchErr == nil {
-					fetchErr = err
-				}
-				fetchErrMu.Unlock()
-				return
+				return err
 			}
-
 			if g.maxAge > 0 {
 				msgTime := time.UnixMilli(msg.InternalDate)
 				if time.Since(msgTime) > g.maxAge {
-					return
+					return nil
 				}
 			}
-
 			raw, err := base64.URLEncoding.DecodeString(msg.Raw)
 			if err != nil {
-				fetchErrMu.Lock()
-				if fetchErr == nil {
-					fetchErr = fmt.Errorf("decoding message %s: %w", id, err)
-				}
-				fetchErrMu.Unlock()
-				return
+				return fmt.Errorf("decoding message %s: %w", id, err)
 			}
-
 			month := messageMonth(msg)
 			entryName := fmt.Sprintf("%s.eml", id)
 
@@ -210,13 +185,12 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 				fmt.Printf("  fetched %d messages so far...\n", fetched)
 			}
 			mu.Unlock()
-		}()
+			return nil
+		})
 	}
 
-	wg.Wait()
-
-	if fetchErr != nil {
-		return fetched, fetchErr
+	if err := eg.Wait(); err != nil {
+		return fetched, err
 	}
 
 	if g.progress != nil {

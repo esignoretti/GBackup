@@ -3,6 +3,7 @@ package gws
 import (
 	"context"
 	"fmt"
+	"time"
 
 	admin "google.golang.org/api/admin/directory/v1"
 	"google.golang.org/api/option"
@@ -35,7 +36,8 @@ func (d *DirectoryService) ListUsers(ctx context.Context) ([]*UserInfo, error) {
 	var users []*UserInfo
 	pageToken := ""
 	for {
-		call := d.service.Users.List().Context(ctx).
+		listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
+		call := d.service.Users.List().Context(listCtx).
 			Customer("my_customer").
 			MaxResults(500).
 			OrderBy("email")
@@ -43,6 +45,7 @@ func (d *DirectoryService) ListUsers(ctx context.Context) ([]*UserInfo, error) {
 			call.PageToken(pageToken)
 		}
 		resp, err := call.Do()
+		listCancel()
 		if err != nil {
 			return nil, fmt.Errorf("listing users: %w", err)
 		}

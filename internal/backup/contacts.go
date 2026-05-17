@@ -72,14 +72,16 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 	var allEntries []archive.ArchiveEntry
 	pageToken := ""
 	for {
+		listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
 		call := svc.People.Connections.List("people/me").
-			Context(ctx).
+			Context(listCtx).
 			PersonFields("names,emailAddresses,phoneNumbers,organizations,birthdays,addresses,photos,metadata").
 			PageSize(1000)
 		if pageToken != "" {
 			call.PageToken(pageToken)
 		}
 		resp, err := call.Do()
+		listCancel()
 		if err != nil {
 			return 0, fmt.Errorf("listing connections: %w", err)
 		}

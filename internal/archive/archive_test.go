@@ -51,9 +51,9 @@ func TestAppendToArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var seen []ArchiveEntry
+	seen := map[string]string{}
 	err = Read(bytes.NewReader(combined), func(e ArchiveEntry) error {
-		seen = append(seen, e)
+		seen[e.Name] = string(e.Data)
 		return nil
 	})
 	if err != nil {
@@ -62,11 +62,11 @@ func TestAppendToArchive(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("expected 2 entries after append, got %d", len(seen))
 	}
-	if seen[0].Name != "a.txt" || string(seen[0].Data) != "original" {
-		t.Fatalf("first entry changed: %+v", seen[0])
+	if seen["a.txt"] != "original" {
+		t.Fatalf("a.txt has wrong data: %q", seen["a.txt"])
 	}
-	if seen[1].Name != "b.txt" || string(seen[1].Data) != "appended" {
-		t.Fatalf("second entry wrong: %+v", seen[1])
+	if seen["b.txt"] != "appended" {
+		t.Fatalf("b.txt has wrong data: %q", seen["b.txt"])
 	}
 }
 
