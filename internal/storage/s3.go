@@ -20,14 +20,17 @@ type Client struct {
 }
 
 func NewClient(cfg *gconfig.StorageConfig) (*Client, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.AccessKeyID, cfg.SecretAccessKey, "",
-		)),
 		awsconfig.WithRetryMode(aws.RetryModeAdaptive),
 		awsconfig.WithRetryMaxAttempts(10),
-	)
+	}
+	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			cfg.AccessKeyID, cfg.SecretAccessKey, "",
+		)))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("loading AWS config: %w", err)
 	}

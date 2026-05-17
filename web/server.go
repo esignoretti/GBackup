@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
+	"net"
 	"net/http"
+	"time"
 
 	"github.com/esignoretti/gbackup/internal/config"
 	"github.com/esignoretti/gbackup/internal/storage"
@@ -27,6 +30,10 @@ type DashboardData struct {
 }
 
 func (s *Server) Start() error {
+	if err := s.validateAddr(); err != nil {
+		return err
+	}
+
 	mux := http.NewServeMux()
 
 	tmplContent, err := templateFS.ReadFile("templates/index.html")
@@ -40,21 +47,47 @@ func (s *Server) Start() error {
 			http.NotFound(w, r)
 			return
 		}
-		tmpl.Execute(w, DashboardData{
+		if err := tmpl.Execute(w, DashboardData{
 			Domain: s.Config.Workspace.Domain,
 			Bucket: s.Config.Storage.Bucket,
 			Region: s.Config.Storage.Region,
-		})
+		}); err != nil {
+			log.Printf("dashboard render error: %v", err)
+		}
 	})
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		if err := json.NewEncoder(w).Encode(map[string]string{
 			"domain": s.Config.Workspace.Domain,
 			"bucket": s.Config.Storage.Bucket,
-		})
+		}); err != nil {
+			log.Printf("status encode error: %v", err)
+		}
 	})
 
+	srv := &http.Server{
+		Addr:              s.Addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
 	fmt.Printf("Web dashboard starting on %s\n", s.Addr)
-	return http.ListenAndServe(s.Addr, mux)
+	return srv.ListenAndServe()
+}
+
+func (s *Server) validateAddr() error {
+	host, _, err := net.SplitHostPort(s.Addr)
+	if err != nil {
+		return fmt.Errorf("invalid addr %q: %w", s.Addr, err)
+	}
+	switch host {
+	case "", "localhost", "127.0.0.1", "::1":
+		return nil
+	default:
+		return fmt.Errorf("refusing to bind to %q: dashboard must be localhost-only", host)
+	}
 }

@@ -141,11 +141,8 @@ func (c *Config) Validate() error {
 	if c.Storage.Region == "" {
 		errs = append(errs, fmt.Errorf("storage.region is required"))
 	}
-	if c.Storage.AccessKeyID == "" {
-		errs = append(errs, fmt.Errorf("storage.access_key_id is required"))
-	}
-	if c.Storage.SecretAccessKey == "" {
-		errs = append(errs, fmt.Errorf("storage.secret_access_key is required"))
+	if (c.Storage.AccessKeyID == "") != (c.Storage.SecretAccessKey == "") {
+		errs = append(errs, fmt.Errorf("storage: provide both access_key_id and secret_access_key, or neither (to use the AWS default credential chain)"))
 	}
 	if len(c.Services) == 0 {
 		errs = append(errs, fmt.Errorf("services: at least one service required"))

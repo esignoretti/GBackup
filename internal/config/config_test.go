@@ -59,6 +59,28 @@ func TestConfigValidateMissingBucket(t *testing.T) {
 	}
 }
 
+func TestConfigValidateEmptyCredsAllowed(t *testing.T) {
+	cfg := &Config{
+		Workspace: WorkspaceConfig{Domain: "d", AdminEmail: "a@d", ServiceAccountFile: "/k.json"},
+		Storage:   StorageConfig{Bucket: "b", Region: "us-east-1"},
+		Services:  []string{"drive"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected empty creds to validate (use AWS default chain), got %v", err)
+	}
+}
+
+func TestConfigValidateOnlyOneCredHalfIsError(t *testing.T) {
+	cfg := &Config{
+		Workspace: WorkspaceConfig{Domain: "d", AdminEmail: "a@d", ServiceAccountFile: "/k.json"},
+		Storage:   StorageConfig{Bucket: "b", Region: "us-east-1", AccessKeyID: "ak"},
+		Services:  []string{"drive"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when only access key ID is set without secret")
+	}
+}
+
 func TestSaveConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.yaml")
