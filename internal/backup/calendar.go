@@ -84,12 +84,14 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 	pageToken := ""
 	for {
 		listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
+		now := time.Now()
 		call := svc.Events.List("primary").
 			Context(listCtx).
 			SingleEvents(true).
 			MaxResults(2500).
 			ShowDeleted(false).
-			TimeMin(time.Now().Add(-366 * 24 * time.Hour).Format(time.RFC3339))
+			TimeMin(now.Add(-366 * 24 * time.Hour).Format(time.RFC3339)).
+			TimeMax(now.Add(366 * 24 * time.Hour).Format(time.RFC3339))
 		if pageToken != "" {
 			call.PageToken(pageToken)
 		}
