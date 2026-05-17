@@ -49,9 +49,10 @@ func (r *DriveRestore) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("invalid date format (use YYYY-MM-DD): %w", err)
 		}
+		endOfDay := cutoff.Add(24 * time.Hour)
 		var filtered []*metadata.Item
 		for _, item := range items {
-			if !item.ModifiedAt.After(cutoff.Add(24 * time.Hour)) {
+			if item.ModifiedAt.Before(endOfDay) {
 				filtered = append(filtered, item)
 			}
 		}

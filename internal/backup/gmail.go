@@ -176,8 +176,9 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 
 			mu.Lock()
 			buckets[month] = append(buckets[month], archive.ArchiveEntry{
-				Name: entryName,
-				Data: raw,
+				Name:    entryName,
+				Data:    raw,
+				ModTime: time.UnixMilli(msg.InternalDate),
 			})
 			fetched++
 			if g.progress != nil && fetched%100 == 0 {
@@ -279,13 +280,14 @@ func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entri
 	for _, entry := range entries {
 		if g.metaDB != nil {
 			if err := g.metaDB.TrackItem(&metadata.Item{
-				Service:   "gmail",
-				User:      user,
-				ObjectKey: objKey,
-				ItemPath:  entry.Name,
-				ItemID:    entryNameToID(entry.Name),
-				Size:      int64(len(entry.Data)),
-				Checksum:  entry.Name,
+				Service:    "gmail",
+				User:       user,
+				ObjectKey:  objKey,
+				ItemPath:   entry.Name,
+				ItemID:     entryNameToID(entry.Name),
+				Size:       int64(len(entry.Data)),
+				Checksum:   entry.Name,
+				ModifiedAt: entry.ModTime,
 			}); err != nil {
 				return 0, fmt.Errorf("tracking %s: %w", entry.Name, err)
 			}

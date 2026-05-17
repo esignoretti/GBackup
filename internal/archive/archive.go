@@ -8,11 +8,13 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type ArchiveEntry struct {
-	Name string
-	Data []byte
+	Name    string
+	Data    []byte
+	ModTime time.Time
 }
 
 func Create(entries []ArchiveEntry) ([]byte, error) {

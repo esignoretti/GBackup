@@ -113,9 +113,17 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 				return 0, fmt.Errorf("marshaling event %s: %w", event.Id, err)
 			}
 
+			modTime := time.Now()
+			if event.Updated != "" {
+				if t, parseErr := time.Parse(time.RFC3339, event.Updated); parseErr == nil {
+					modTime = t
+				}
+			}
+
 			buckets[year] = append(buckets[year], archive.ArchiveEntry{
-				Name: entryName,
-				Data: data,
+				Name:    entryName,
+				Data:    data,
+				ModTime: modTime,
 			})
 			fetched++
 		}
@@ -170,13 +178,14 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 		for _, entry := range entries {
 			if c.metaDB != nil {
 				if err := c.metaDB.TrackItem(&metadata.Item{
-					Service:   "calendar",
-					User:      user,
-					ObjectKey: objKey,
-					ItemPath:  entry.Name,
-					ItemID:    strings.TrimSuffix(entry.Name, ".json"),
-					Size:      int64(len(entry.Data)),
-					Checksum:  entry.Name,
+					Service:    "calendar",
+					User:       user,
+					ObjectKey:  objKey,
+					ItemPath:   entry.Name,
+					ItemID:     strings.TrimSuffix(entry.Name, ".json"),
+					Size:       int64(len(entry.Data)),
+					Checksum:   entry.Name,
+					ModifiedAt: entry.ModTime,
 				}); err != nil {
 					return totalCount, fmt.Errorf("tracking %s: %w", entry.Name, err)
 				}

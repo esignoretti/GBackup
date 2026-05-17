@@ -77,19 +77,11 @@ func (r *ContactsRestore) Run(ctx context.Context) error {
 		if err := json.Unmarshal(entry.Data, &person); err != nil {
 			return fmt.Errorf("unmarshaling contact %s: %w", entry.Name, err)
 		}
-		contact := &people.Person{}
-		if len(person.Names) > 0 {
-			contact.Names = []*people.Name{
-				{GivenName: person.Names[0].GivenName, FamilyName: person.Names[0].FamilyName},
-			}
-		}
-		contact.EmailAddresses = person.EmailAddresses
-		contact.PhoneNumbers = person.PhoneNumbers
-		contact.Organizations = person.Organizations
-		contact.Addresses = person.Addresses
-		contact.Birthdays = person.Birthdays
-
-		if _, err := svc.People.CreateContact(contact).Context(ctx).Do(); err != nil {
+		// CreateContact rejects ResourceName, Etag, and Metadata on input.
+		person.ResourceName = ""
+		person.Etag = ""
+		person.Metadata = nil
+		if _, err := svc.People.CreateContact(&person).Context(ctx).Do(); err != nil {
 			return fmt.Errorf("creating contact %s: %w", entry.Name, err)
 		}
 		restored++

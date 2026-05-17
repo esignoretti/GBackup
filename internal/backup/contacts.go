@@ -93,9 +93,23 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 				return 0, fmt.Errorf("marshaling contact %s: %w", person.ResourceName, err)
 			}
 			entryName := fmt.Sprintf("%s.json", strings.ReplaceAll(person.ResourceName, "/", "_"))
+
+			modTime := time.Now()
+			if person.Metadata != nil {
+				for _, src := range person.Metadata.Sources {
+					if src.UpdateTime != "" {
+						if t, parseErr := time.Parse(time.RFC3339, src.UpdateTime); parseErr == nil {
+							modTime = t
+							break
+						}
+					}
+				}
+			}
+
 			allEntries = append(allEntries, archive.ArchiveEntry{
-				Name: entryName,
-				Data: data,
+				Name:    entryName,
+				Data:    data,
+				ModTime: modTime,
 			})
 		}
 
@@ -147,13 +161,14 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 	for _, entry := range allEntries {
 		if c.metaDB != nil {
 			if err := c.metaDB.TrackItem(&metadata.Item{
-				Service:   "contacts",
-				User:      user,
-				ObjectKey: objKey,
-				ItemPath:  entry.Name,
-				ItemID:    entry.Name,
-				Size:      int64(len(entry.Data)),
-				Checksum:  entry.Name,
+				Service:    "contacts",
+				User:       user,
+				ObjectKey:  objKey,
+				ItemPath:   entry.Name,
+				ItemID:     entry.Name,
+				Size:       int64(len(entry.Data)),
+				Checksum:   entry.Name,
+				ModifiedAt: entry.ModTime,
 			}); err != nil {
 				return 0, fmt.Errorf("tracking %s: %w", entry.Name, err)
 			}
