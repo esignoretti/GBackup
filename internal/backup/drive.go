@@ -24,7 +24,6 @@ type DriveBackupConfig struct {
 }
 
 type DriveBackup struct {
-	driveSvc *drive.Service
 	metaDB   *metadata.DB
 	store    *storage.Client
 	cfg      *DriveBackupConfig
@@ -34,11 +33,6 @@ type DriveBackup struct {
 
 func NewDriveBackup(cfg *DriveBackupConfig) (*DriveBackup, error) {
 	return &DriveBackup{cfg: cfg}, nil
-}
-
-func (d *DriveBackup) WithDriveService(svc *drive.Service) *DriveBackup {
-	d.driveSvc = svc
-	return d
 }
 
 func (d *DriveBackup) WithMetaDB(db *metadata.DB) *DriveBackup {
@@ -61,20 +55,12 @@ func (d *DriveBackup) WithMaxAge(dur time.Duration) *DriveBackup {
 	return d
 }
 
-func (d *DriveBackup) initDriveService(ctx context.Context) error {
-	if d.driveSvc != nil {
-		return nil
-	}
-	svc, err := drive.NewService(ctx,
-		option.WithCredentialsFile(d.cfg.ServiceAccountFile),
-		option.WithScopes(gws.ScopesForService("drive")...),
-		option.ImpersonateCredentials(d.cfg.AdminEmail),
-	)
+func (d *DriveBackup) driveServiceForUser(ctx context.Context, user string) (*drive.Service, error) {
+	ts, err := gws.UserTokenSource(ctx, d.cfg.ServiceAccountFile, user, gws.ScopesForService("drive"))
 	if err != nil {
-		return fmt.Errorf("creating drive service: %w", err)
+		return nil, err
 	}
-	d.driveSvc = svc
-	return nil
+	return drive.NewService(ctx, option.WithTokenSource(ts))
 }
 
 const driveMaxRetries = 3
@@ -118,8 +104,8 @@ func filterUsers(users, exclude []string) []string {
 	return result
 }
 
-func (d *DriveBackup) buildQuery(user string) string {
-	q := fmt.Sprintf("'%s' in owners", user)
+func (d *DriveBackup) buildQuery() string {
+	q := "'me' in owners"
 	if d.maxAge > 0 {
 		cutoff := time.Now().Add(-d.maxAge).Format(time.RFC3339)
 		q += fmt.Sprintf(" and modifiedTime > '%s'", cutoff)
@@ -128,8 +114,9 @@ func (d *DriveBackup) buildQuery(user string) string {
 }
 
 func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
-	if err := d.initDriveService(ctx); err != nil {
-		return 0, err
+	driveSvc, err := d.driveServiceForUser(ctx, user)
+	if err != nil {
+		return 0, fmt.Errorf("creating drive service for %s: %w", user, err)
 	}
 
 	runType := map[bool]string{true: "full", false: "incremental"}[full]
@@ -151,12 +138,12 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	var fetched int
 	for {
 		listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
-		call := d.driveSvc.Files.List().
+		call := driveSvc.Files.List().
 			Context(listCtx).
 			Corpora("allDrives").
 			IncludeItemsFromAllDrives(true).
 			SupportsAllDrives(true).
-			Q(d.buildQuery(user)).
+			Q(d.buildQuery()).
 			PageSize(100).
 			Fields("nextPageToken, files(id, name, mimeType, size, md5Checksum, modifiedTime, parents, version)")
 		if pageToken != "" {
@@ -195,7 +182,7 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 				}
 			}
 
-			content, ext, err := d.downloadFileRetry(ctx, f, category)
+			content, ext, err := d.downloadFileRetry(ctx, driveSvc, f, category)
 			if err != nil {
 				fmt.Printf("  drive: skipping %s (%s): %v\n", f.Name, f.Id, err)
 				continue
@@ -259,26 +246,26 @@ func (d *DriveBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	return count, nil
 }
 
-func (d *DriveBackup) downloadFile(ctx context.Context, file *drive.File, category string) (io.ReadCloser, string, error) {
+func (d *DriveBackup) downloadFile(ctx context.Context, svc *drive.Service, file *drive.File, category string) (io.ReadCloser, string, error) {
 	if category == "google-doc" {
 		entry, ok := driveExportMap[file.MimeType]
 		if !ok {
 			return nil, "", fmt.Errorf("no export mapping for %s", file.MimeType)
 		}
-		resp, err := d.driveSvc.Files.Export(file.Id, entry.exportMIME).Context(ctx).Download()
+		resp, err := svc.Files.Export(file.Id, entry.exportMIME).Context(ctx).Download()
 		if err != nil {
 			return nil, "", err
 		}
 		return resp.Body, entry.ext, nil
 	}
-	resp, err := d.driveSvc.Files.Get(file.Id).Context(ctx).SupportsAllDrives(true).Download()
+	resp, err := svc.Files.Get(file.Id).Context(ctx).SupportsAllDrives(true).Download()
 	if err != nil {
 		return nil, "", err
 	}
 	return resp.Body, "", nil
 }
 
-func (d *DriveBackup) downloadFileRetry(ctx context.Context, file *drive.File, category string) (io.ReadCloser, string, error) {
+func (d *DriveBackup) downloadFileRetry(ctx context.Context, svc *drive.Service, file *drive.File, category string) (io.ReadCloser, string, error) {
 	const base = 200 * time.Millisecond
 	const maxDelay = 5 * time.Second
 	var lastErr error
@@ -294,7 +281,7 @@ func (d *DriveBackup) downloadFileRetry(ctx context.Context, file *drive.File, c
 				return nil, "", ctx.Err()
 			}
 		}
-		rc, ext, err := d.downloadFile(ctx, file, category)
+		rc, ext, err := d.downloadFile(ctx, svc, file, category)
 		if err == nil {
 			return rc, ext, nil
 		}

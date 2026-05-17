@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/esignoretti/gbackup/internal/archive"
+	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/option"
@@ -47,11 +48,11 @@ func (r *ContactsRestore) Run(ctx context.Context) error {
 		return nil
 	}
 
-	svc, err := people.NewService(ctx,
-		option.WithCredentialsFile(r.ServiceAccountFile),
-		option.WithScopes("https://www.googleapis.com/auth/contacts"),
-		option.ImpersonateCredentials(targetUser),
-	)
+	ts, err := gws.UserTokenSource(ctx, r.ServiceAccountFile, targetUser, []string{"https://www.googleapis.com/auth/contacts"})
+	if err != nil {
+		return fmt.Errorf("creating people token: %w", err)
+	}
+	svc, err := people.NewService(ctx, option.WithTokenSource(ts))
 	if err != nil {
 		return fmt.Errorf("creating people service: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
 	drive "google.golang.org/api/drive/v3"
@@ -30,11 +31,11 @@ func (r *DriveRestore) Run(ctx context.Context) error {
 		targetUser = r.User
 	}
 
-	svc, err := drive.NewService(ctx,
-		option.WithCredentialsFile(r.ServiceAccountFile),
-		option.WithScopes(drive.DriveScope),
-		option.ImpersonateCredentials(targetUser),
-	)
+	ts, err := gws.UserTokenSource(ctx, r.ServiceAccountFile, targetUser, []string{drive.DriveScope})
+	if err != nil {
+		return fmt.Errorf("creating drive token: %w", err)
+	}
+	svc, err := drive.NewService(ctx, option.WithTokenSource(ts))
 	if err != nil {
 		return fmt.Errorf("creating drive service: %w", err)
 	}

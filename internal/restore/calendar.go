@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/esignoretti/gbackup/internal/archive"
+	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/calendar/v3"
@@ -29,11 +30,11 @@ func (r *CalendarRestore) Run(ctx context.Context) error {
 		targetUser = r.User
 	}
 
-	svc, err := calendar.NewService(ctx,
-		option.WithCredentialsFile(r.ServiceAccountFile),
-		option.WithScopes(calendar.CalendarEventsScope),
-		option.ImpersonateCredentials(targetUser),
-	)
+	ts, err := gws.UserTokenSource(ctx, r.ServiceAccountFile, targetUser, []string{calendar.CalendarEventsScope})
+	if err != nil {
+		return fmt.Errorf("creating calendar token: %w", err)
+	}
+	svc, err := calendar.NewService(ctx, option.WithTokenSource(ts))
 	if err != nil {
 		return fmt.Errorf("creating calendar service: %w", err)
 	}

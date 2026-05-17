@@ -70,11 +70,11 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 		runID = id
 	}
 
-	svc, err := calendar.NewService(ctx,
-		option.WithCredentialsFile(c.cfg.ServiceAccountFile),
-		option.WithScopes(gws.ScopesForService("calendar")...),
-		option.ImpersonateCredentials(user),
-	)
+	ts, err := gws.UserTokenSource(ctx, c.cfg.ServiceAccountFile, user, gws.ScopesForService("calendar"))
+	if err != nil {
+		return 0, fmt.Errorf("creating calendar token for %s: %w", user, err)
+	}
+	svc, err := calendar.NewService(ctx, option.WithTokenSource(ts))
 	if err != nil {
 		return 0, fmt.Errorf("creating calendar service for %s: %w", user, err)
 	}

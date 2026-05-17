@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"os"
 	"sync"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/progress"
 	"github.com/esignoretti/gbackup/internal/storage"
-	"golang.org/x/oauth2/google"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 	"google.golang.org/api/gmail/v1"
@@ -70,16 +68,11 @@ func (g *GmailBackup) WithMaxAge(d time.Duration) *GmailBackup {
 }
 
 func (g *GmailBackup) gmailServiceForUser(ctx context.Context, user string) (*gmail.Service, error) {
-	keyData, err := os.ReadFile(g.cfg.ServiceAccountFile)
+	ts, err := gws.UserTokenSource(ctx, g.cfg.ServiceAccountFile, user, gws.ScopesForService("gmail"))
 	if err != nil {
-		return nil, fmt.Errorf("reading service account key: %w", err)
+		return nil, err
 	}
-	jwtCfg, err := google.JWTConfigFromJSON(keyData, gws.ScopesForService("gmail")...)
-	if err != nil {
-		return nil, fmt.Errorf("creating JWT config: %w", err)
-	}
-	jwtCfg.Subject = user
-	return gmail.NewService(ctx, option.WithTokenSource(jwtCfg.TokenSource(ctx)))
+	return gmail.NewService(ctx, option.WithTokenSource(ts))
 }
 
 func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {

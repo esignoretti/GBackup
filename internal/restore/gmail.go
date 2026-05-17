@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/esignoretti/gbackup/internal/archive"
+	"github.com/esignoretti/gbackup/internal/gws"
 	"github.com/esignoretti/gbackup/internal/metadata"
 	"github.com/esignoretti/gbackup/internal/storage"
 	"google.golang.org/api/gmail/v1"
@@ -29,11 +30,11 @@ func (r *GmailRestore) Run(ctx context.Context) error {
 		targetUser = r.User
 	}
 
-	svc, err := gmail.NewService(ctx,
-		option.WithCredentialsFile(r.ServiceAccountFile),
-		option.WithScopes(gmail.GmailInsertScope),
-		option.ImpersonateCredentials(targetUser),
-	)
+	ts, err := gws.UserTokenSource(ctx, r.ServiceAccountFile, targetUser, []string{gmail.GmailInsertScope})
+	if err != nil {
+		return fmt.Errorf("creating gmail token: %w", err)
+	}
+	svc, err := gmail.NewService(ctx, option.WithTokenSource(ts))
 	if err != nil {
 		return fmt.Errorf("creating gmail service: %w", err)
 	}

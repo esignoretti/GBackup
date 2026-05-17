@@ -9,6 +9,14 @@ import (
 	"google.golang.org/api/option"
 )
 
+func newDirectoryService(ctx context.Context, auth *AuthConfig) (*admin.Service, error) {
+	ts, err := UserTokenSource(ctx, auth.ServiceAccountFile, auth.AdminEmail, []string{directoryScope})
+	if err != nil {
+		return nil, err
+	}
+	return admin.NewService(ctx, option.WithTokenSource(ts))
+}
+
 type UserInfo struct {
 	PrimaryEmail string
 	FullName     string
@@ -21,11 +29,7 @@ type DirectoryService struct {
 
 func NewDirectoryService(auth *AuthConfig) (*DirectoryService, error) {
 	ctx := context.Background()
-	svc, err := admin.NewService(ctx,
-		option.WithCredentialsFile(auth.ServiceAccountFile),
-		option.WithScopes(directoryScope),
-		option.ImpersonateCredentials(auth.AdminEmail),
-	)
+	svc, err := newDirectoryService(ctx, auth)
 	if err != nil {
 		return nil, fmt.Errorf("creating directory service: %w", err)
 	}

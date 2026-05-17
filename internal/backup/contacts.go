@@ -70,11 +70,11 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 		runID = id
 	}
 
-	svc, err := people.NewService(ctx,
-		option.WithCredentialsFile(c.cfg.ServiceAccountFile),
-		option.WithScopes(gws.ScopesForService("contacts")...),
-		option.ImpersonateCredentials(user),
-	)
+	ts, err := gws.UserTokenSource(ctx, c.cfg.ServiceAccountFile, user, gws.ScopesForService("contacts"))
+	if err != nil {
+		return 0, fmt.Errorf("creating people token for %s: %w", user, err)
+	}
+	svc, err := people.NewService(ctx, option.WithTokenSource(ts))
 	if err != nil {
 		return 0, fmt.Errorf("creating people service for %s: %w", user, err)
 	}
