@@ -18,7 +18,6 @@ type DriveRestore struct {
 	Store              *storage.Client
 	MetaDB             *metadata.DB
 	ServiceAccountFile string
-	AdminEmail         string
 	User               string
 	Date               string
 	DryRun             bool

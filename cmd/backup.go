@@ -36,7 +36,9 @@ var backupCmd = &cobra.Command{
 
 		home, _ := os.UserHomeDir()
 		dbDir := filepath.Join(home, ".gbackup")
-		os.MkdirAll(dbDir, 0700)
+		if err := os.MkdirAll(dbDir, 0700); err != nil {
+			return fmt.Errorf("creating db dir: %w", err)
+		}
 		dbPath := filepath.Join(dbDir, "meta.db")
 		db, err := metadata.New(dbPath)
 		if err != nil {

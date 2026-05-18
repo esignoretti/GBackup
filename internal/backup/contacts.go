@@ -20,7 +20,6 @@ import (
 
 type ContactsBackupConfig struct {
 	ServiceAccountFile string
-	AdminEmail         string
 }
 
 type ContactsBackup struct {

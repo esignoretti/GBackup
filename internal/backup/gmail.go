@@ -33,7 +33,6 @@ const (
 
 type GmailBackupConfig struct {
 	ServiceAccountFile string
-	AdminEmail         string
 }
 
 type GmailBackup struct {
@@ -114,7 +113,7 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		return 0, nil
 	}
 	if g.progress != nil {
-		fmt.Printf("  found %d messages to fetch\n", len(allMsgIDs))
+		g.progress.Fetching("messages to fetch", len(allMsgIDs))
 	}
 
 	// Per-month state, lazily created when the first message for a month is fetched.
@@ -186,7 +185,7 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			n := fetched
 			fetchedMu.Unlock()
 			if g.progress != nil && n%100 == 0 {
-				fmt.Printf("  fetched %d messages so far...\n", n)
+				g.progress.Fetching("messages", n)
 			}
 			return nil
 		})
@@ -236,7 +235,7 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	}
 
 	if g.progress != nil {
-		fmt.Printf("  fetched %d messages\n", fetched)
+		g.progress.FetchDone("messages", fetched)
 	}
 
 	if fetchErr != nil {
@@ -340,7 +339,7 @@ func (g *GmailBackup) runMonthUploader(ctx context.Context, user, month string, 
 	})
 
 	if g.progress != nil && uploadErr == nil {
-		fmt.Printf("  ↑ %s\n", objKey)
+		g.progress.Upload(objKey)
 	}
 	ms.done <- uploadErr
 }

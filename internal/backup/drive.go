@@ -20,7 +20,6 @@ import (
 
 type DriveBackupConfig struct {
 	ServiceAccountFile string
-	AdminEmail         string
 }
 
 type DriveBackup struct {

@@ -20,7 +20,6 @@ import (
 
 type CalendarBackupConfig struct {
 	ServiceAccountFile string
-	AdminEmail         string
 }
 
 type CalendarBackup struct {
@@ -211,40 +210,36 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 	return totalCount, nil
 }
 
-func eventYear(event *calendar.Event) string {
+// parseEventStart parses event.Start.Date or event.Start.DateTime, whichever
+// is set, returning (time, true). If neither is set or both fail to parse it
+// returns the zero value and false.
+func parseEventStart(event *calendar.Event) (time.Time, bool) {
 	if event.Start == nil {
-		return time.Now().Format("2006")
+		return time.Time{}, false
 	}
 	if event.Start.Date != "" {
-		t, err := time.Parse("2006-01-02", event.Start.Date)
-		if err == nil {
-			return t.Format("2006")
+		if t, err := time.Parse("2006-01-02", event.Start.Date); err == nil {
+			return t, true
 		}
 	}
 	if event.Start.DateTime != "" {
-		t, err := time.Parse(time.RFC3339, event.Start.DateTime)
-		if err == nil {
-			return t.Format("2006")
+		if t, err := time.Parse(time.RFC3339, event.Start.DateTime); err == nil {
+			return t, true
 		}
+	}
+	return time.Time{}, false
+}
+
+func eventYear(event *calendar.Event) string {
+	if t, ok := parseEventStart(event); ok {
+		return t.Format("2006")
 	}
 	return time.Now().Format("2006")
 }
 
 func eventStartTime(event *calendar.Event) *time.Time {
-	if event.Start == nil {
-		return nil
-	}
-	if event.Start.Date != "" {
-		t, err := time.Parse("2006-01-02", event.Start.Date)
-		if err == nil {
-			return &t
-		}
-	}
-	if event.Start.DateTime != "" {
-		t, err := time.Parse(time.RFC3339, event.Start.DateTime)
-		if err == nil {
-			return &t
-		}
+	if t, ok := parseEventStart(event); ok {
+		return &t
 	}
 	return nil
 }

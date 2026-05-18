@@ -75,28 +75,29 @@ func (r *Runner) Run(ctx context.Context, full bool) (RunResult, error) {
 	users := r.resolveUsers(ctx)
 
 	var mu sync.Mutex
-	var wg sync.WaitGroup
+	eg, egCtx := errgroup.WithContext(ctx)
 	for _, svc := range r.cfg.Config.Services {
 		svc := svc
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := r.runService(ctx, svc, users, full)
+		eg.Go(func() error {
+			err := r.runService(egCtx, svc, users, full)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil && gws.IsServiceDisabled(err) {
+			switch {
+			case err != nil && gws.IsServiceDisabled(err):
 				result.Services[svc] = ServiceResult{Skipped: true, SkipReason: "API not enabled"}
 				fmt.Fprintf(os.Stderr, "  %s: API not enabled in Google Cloud project, skipping\n", svc)
-				return
-			}
-			if err != nil {
+			case err != nil:
 				result.Services[svc] = ServiceResult{Err: fmt.Errorf("%s: %w", svc, err)}
-				return
+			default:
+				result.Services[svc] = ServiceResult{}
 			}
-			result.Services[svc] = ServiceResult{}
-		}()
+			// Always return nil — per-service errors flow through RunResult, not
+			// errgroup cancellation. Cancelling sibling services on the first
+			// failure would punish unrelated services for one bad API.
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = eg.Wait()
 	return result, result.FirstError()
 }
 
@@ -200,7 +201,6 @@ func (r *Runner) runGmailBackup(ctx context.Context, users []string, full bool) 
 func newDriveBackup(cfg *RunnerConfig) (*DriveBackup, error) {
 	b, err := NewDriveBackup(&DriveBackupConfig{
 		ServiceAccountFile: cfg.DirAuth.ServiceAccountFile,
-		AdminEmail:         cfg.DirAuth.AdminEmail,
 	})
 	if err != nil {
 		return nil, err
@@ -218,7 +218,6 @@ func newDriveBackup(cfg *RunnerConfig) (*DriveBackup, error) {
 func newContactsBackup(cfg *RunnerConfig) (*ContactsBackup, error) {
 	cb, err := NewContactsBackup(&ContactsBackupConfig{
 		ServiceAccountFile: cfg.DirAuth.ServiceAccountFile,
-		AdminEmail:         cfg.DirAuth.AdminEmail,
 	})
 	if err != nil {
 		return nil, err
@@ -236,7 +235,6 @@ func newContactsBackup(cfg *RunnerConfig) (*ContactsBackup, error) {
 func newCalendarBackup(cfg *RunnerConfig) (*CalendarBackup, error) {
 	cb, err := NewCalendarBackup(&CalendarBackupConfig{
 		ServiceAccountFile: cfg.DirAuth.ServiceAccountFile,
-		AdminEmail:         cfg.DirAuth.AdminEmail,
 	})
 	if err != nil {
 		return nil, err
@@ -254,7 +252,6 @@ func newCalendarBackup(cfg *RunnerConfig) (*CalendarBackup, error) {
 func newGmailBackup(cfg *RunnerConfig) (*GmailBackup, error) {
 	gb, err := NewGmailBackup(&GmailBackupConfig{
 		ServiceAccountFile: cfg.DirAuth.ServiceAccountFile,
-		AdminEmail:         cfg.DirAuth.AdminEmail,
 	})
 	if err != nil {
 		return nil, err
