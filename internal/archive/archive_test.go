@@ -151,6 +151,18 @@ func TestValidateNameRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestChecksumDeterministicAndDistinct(t *testing.T) {
+	if Checksum([]byte("a")) == Checksum([]byte("b")) {
+		t.Fatal("sha256 collision on a vs b is impossible — bug in Checksum")
+	}
+	if Checksum([]byte("a")) != Checksum([]byte("a")) {
+		t.Fatal("Checksum is not deterministic")
+	}
+	if len(Checksum([]byte("a"))) != 64 {
+		t.Fatalf("expected 64 hex chars, got %d", len(Checksum([]byte("a"))))
+	}
+}
+
 func TestAppendToArchive_NoChangeReturnsSentinel(t *testing.T) {
 	orig := []ArchiveEntry{{Name: "a.txt", Data: []byte("same")}}
 	data, err := Create(orig)

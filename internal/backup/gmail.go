@@ -225,7 +225,7 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 					ItemPath:   entry.Name,
 					ItemID:     entryNameToID(entry.Name),
 					Size:       int64(len(entry.Data)),
-					Checksum:   entry.Name,
+					Checksum:   archive.Checksum(entry.Data),
 					ModifiedAt: entry.ModTime,
 				}); trackErr != nil {
 					return totalCount, fmt.Errorf("tracking %s: %w", entry.Name, trackErr)

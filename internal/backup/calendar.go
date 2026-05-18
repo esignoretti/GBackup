@@ -193,7 +193,7 @@ func (c *CalendarBackup) BackupUser(ctx context.Context, user string, full bool)
 					ItemPath:   entry.Name,
 					ItemID:     strings.TrimSuffix(entry.Name, ".json"),
 					Size:       int64(len(entry.Data)),
-					Checksum:   entry.Name,
+					Checksum:   archive.Checksum(entry.Data),
 					ModifiedAt: entry.ModTime,
 				}); err != nil {
 					return totalCount, fmt.Errorf("tracking %s: %w", entry.Name, err)

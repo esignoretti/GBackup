@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,13 @@ import (
 	"strings"
 	"time"
 )
+
+// Checksum returns the hex-encoded SHA-256 of data. Used by the metadata DB
+// to detect modified items between incremental runs.
+func Checksum(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
 
 type ArchiveEntry struct {
 	Name    string

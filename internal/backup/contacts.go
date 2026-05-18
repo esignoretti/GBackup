@@ -174,7 +174,7 @@ func (c *ContactsBackup) BackupUser(ctx context.Context, user string, full bool)
 				ItemPath:   entry.Name,
 				ItemID:     entry.Name,
 				Size:       int64(len(entry.Data)),
-				Checksum:   entry.Name,
+				Checksum:   archive.Checksum(entry.Data),
 				ModifiedAt: entry.ModTime,
 			}); err != nil {
 				return 0, fmt.Errorf("tracking %s: %w", entry.Name, err)
