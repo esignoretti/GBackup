@@ -1,11 +1,11 @@
 package backup
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"sync"
 	"time"
@@ -28,6 +28,7 @@ const (
 	gmailMaxRetries    = 3
 	gmailListRateLimit = 20
 	gmailListRateBurst = 10
+	gmailMonthChanBuf  = 100
 )
 
 type GmailBackupConfig struct {
@@ -75,6 +76,14 @@ func (g *GmailBackup) gmailServiceForUser(ctx context.Context, user string) (*gm
 	return gmail.NewService(ctx, option.WithTokenSource(ts))
 }
 
+// monthState holds the per-month channel + uploader bookkeeping.
+type monthState struct {
+	ch      chan archive.ArchiveEntry
+	done    chan error // nil = success; ErrNoChanges = no-op; else error
+	entries []archive.ArchiveEntry
+	mu      sync.Mutex
+}
+
 func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (int, error) {
 	runType := map[bool]string{true: "full", false: "incremental"}[full]
 	if g.progress != nil {
@@ -95,61 +104,44 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 		return 0, fmt.Errorf("creating gmail service for %s: %w", user, err)
 	}
 
-	listLimiter := rate.NewLimiter(rate.Limit(gmailListRateLimit), gmailListRateBurst)
-
-	var listQuery string
-	if g.maxAge > 0 {
-		cutoff := time.Now().Add(-g.maxAge).Format("2006/01/02")
-		listQuery = fmt.Sprintf("after:%s", cutoff)
+	// Stage 1: list all message IDs.
+	allMsgIDs, err := g.listAllIDs(ctx, svc, user)
+	if err != nil {
+		return 0, err
 	}
-
-	var allMsgIDs []string
-	pageToken := ""
-	for {
-		if err := listLimiter.Wait(ctx); err != nil {
-			return 0, fmt.Errorf("rate limit waiting for list: %w", err)
-		}
-
-		listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
-		call := svc.Users.Messages.List(user).
-			Context(listCtx).
-			MaxResults(500).
-			IncludeSpamTrash(false)
-		if listQuery != "" {
-			call.Q(listQuery)
-		}
-		if pageToken != "" {
-			call.PageToken(pageToken)
-		}
-		resp, err := call.Do()
-		listCancel()
-		if err != nil {
-			if gws.IsServiceDisabled(err) {
-				fmt.Printf("  gmail: API not enabled for %s, skipping\n", user)
-				return 0, nil
-			}
-			return 0, fmt.Errorf("listing messages: %w", err)
-		}
-
-		for _, m := range resp.Messages {
-			allMsgIDs = append(allMsgIDs, m.Id)
-		}
-
-		pageToken = resp.NextPageToken
-		if pageToken == "" {
-			break
-		}
+	if allMsgIDs == nil {
+		// Service disabled — listAllIDs already printed a notice.
+		return 0, nil
 	}
-
 	if g.progress != nil {
 		fmt.Printf("  found %d messages to fetch\n", len(allMsgIDs))
 	}
 
-	limiter := rate.NewLimiter(rate.Limit(gmailRateLimit), gmailRateBurst)
+	// Per-month state, lazily created when the first message for a month is fetched.
+	var (
+		months   = map[string]*monthState{}
+		monthsMu sync.Mutex
+	)
 
-	buckets := make(map[string][]archive.ArchiveEntry)
-	var mu sync.Mutex
+	getMonth := func(month string) *monthState {
+		monthsMu.Lock()
+		defer monthsMu.Unlock()
+		if ms, ok := months[month]; ok {
+			return ms
+		}
+		ms := &monthState{
+			ch:   make(chan archive.ArchiveEntry, gmailMonthChanBuf),
+			done: make(chan error, 1),
+		}
+		months[month] = ms
+		go g.runMonthUploader(ctx, user, month, full, ms)
+		return ms
+	}
+
+	// Stage 2: fetch in parallel, route by month into per-month uploader channels.
+	limiter := rate.NewLimiter(rate.Limit(gmailRateLimit), gmailRateBurst)
 	var fetched int
+	var fetchedMu sync.Mutex
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.SetLimit(gmailConcurrency)
@@ -174,66 +166,84 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 			if err != nil {
 				return fmt.Errorf("decoding message %s: %w", id, err)
 			}
-			month := messageMonth(msg)
-			entryName := fmt.Sprintf("%s.eml", id)
 
-			mu.Lock()
-			buckets[month] = append(buckets[month], archive.ArchiveEntry{
-				Name:    entryName,
+			month := messageMonth(msg)
+			entry := archive.ArchiveEntry{
+				Name:    fmt.Sprintf("%s.eml", id),
 				Data:    raw,
 				ModTime: time.UnixMilli(msg.InternalDate),
-			})
-			fetched++
-			if g.progress != nil && fetched%100 == 0 {
-				fmt.Printf("  fetched %d messages so far...\n", fetched)
 			}
-			mu.Unlock()
+
+			ms := getMonth(month)
+			select {
+			case ms.ch <- entry:
+			case <-egCtx.Done():
+				return egCtx.Err()
+			}
+
+			fetchedMu.Lock()
+			fetched++
+			n := fetched
+			fetchedMu.Unlock()
+			if g.progress != nil && n%100 == 0 {
+				fmt.Printf("  fetched %d messages so far...\n", n)
+			}
 			return nil
 		})
 	}
 
-	if err := eg.Wait(); err != nil {
-		return fetched, err
+	fetchErr := eg.Wait()
+
+	// Close all month channels so uploaders can finalize.
+	monthsMu.Lock()
+	mss := make([]*monthState, 0, len(months))
+	for _, ms := range months {
+		close(ms.ch)
+		mss = append(mss, ms)
+	}
+	monthsMu.Unlock()
+
+	// Wait for every uploader and aggregate.
+	var totalCount int
+	var firstUploadErr error
+	for _, ms := range mss {
+		err := <-ms.done
+		if err != nil && !errors.Is(err, archive.ErrNoChanges) {
+			if firstUploadErr == nil {
+				firstUploadErr = err
+			}
+			continue
+		}
+		// TrackItem each entry only if the upload succeeded (or was a no-op
+		// against bytes-identical existing archive).
+		for _, entry := range ms.entries {
+			if g.metaDB != nil {
+				if trackErr := g.metaDB.TrackItem(&metadata.Item{
+					Service:    "gmail",
+					User:       user,
+					ObjectKey:  storage.ObjectKey("gmail", user, fmt.Sprintf("%s.tar.gz", monthForEntry(entry))),
+					ItemPath:   entry.Name,
+					ItemID:     entryNameToID(entry.Name),
+					Size:       int64(len(entry.Data)),
+					Checksum:   entry.Name,
+					ModifiedAt: entry.ModTime,
+				}); trackErr != nil {
+					return totalCount, fmt.Errorf("tracking %s: %w", entry.Name, trackErr)
+				}
+			}
+			totalCount++
+		}
 	}
 
 	if g.progress != nil {
 		fmt.Printf("  fetched %d messages\n", fetched)
 	}
 
-	if len(buckets) == 0 {
-		return 0, nil
+	if fetchErr != nil {
+		return totalCount, fetchErr
 	}
-
-	var totalCount int
-	var uploadErr error
-	var uploadMu sync.Mutex
-	var uploadWg sync.WaitGroup
-
-	for month, entries := range buckets {
-		month, entries := month, entries
-		uploadWg.Add(1)
-		go func() {
-			defer uploadWg.Done()
-
-			n, err := g.uploadMonth(ctx, user, month, entries, full)
-			if err != nil {
-				uploadMu.Lock()
-				if uploadErr == nil {
-					uploadErr = err
-				}
-				uploadMu.Unlock()
-				return
-			}
-			uploadMu.Lock()
-			totalCount += n
-			uploadMu.Unlock()
-		}()
-	}
-
-	uploadWg.Wait()
-
-	if uploadErr != nil {
-		return totalCount, uploadErr
+	if firstUploadErr != nil {
+		return totalCount, firstUploadErr
 	}
 
 	if g.metaDB != nil && runID != 0 {
@@ -244,65 +254,101 @@ func (g *GmailBackup) BackupUser(ctx context.Context, user string, full bool) (i
 	return totalCount, nil
 }
 
-func (g *GmailBackup) uploadMonth(ctx context.Context, user, month string, entries []archive.ArchiveEntry, full bool) (int, error) {
+func (g *GmailBackup) listAllIDs(ctx context.Context, svc *gmail.Service, user string) ([]string, error) {
+	listLimiter := rate.NewLimiter(rate.Limit(gmailListRateLimit), gmailListRateBurst)
+
+	var listQuery string
+	if g.maxAge > 0 {
+		cutoff := time.Now().Add(-g.maxAge).Format("2006/01/02")
+		listQuery = fmt.Sprintf("after:%s", cutoff)
+	}
+
+	var ids []string
+	pageToken := ""
+	for {
+		if err := listLimiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("rate limit waiting for list: %w", err)
+		}
+		listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
+		call := svc.Users.Messages.List(user).
+			Context(listCtx).
+			MaxResults(500).
+			IncludeSpamTrash(false)
+		if listQuery != "" {
+			call.Q(listQuery)
+		}
+		if pageToken != "" {
+			call.PageToken(pageToken)
+		}
+		resp, err := call.Do()
+		listCancel()
+		if err != nil {
+			if gws.IsServiceDisabled(err) {
+				fmt.Printf("  gmail: API not enabled for %s, skipping\n", user)
+				return nil, nil
+			}
+			return nil, fmt.Errorf("listing messages: %w", err)
+		}
+		for _, m := range resp.Messages {
+			ids = append(ids, m.Id)
+		}
+		pageToken = resp.NextPageToken
+		if pageToken == "" {
+			break
+		}
+	}
+	return ids, nil
+}
+
+// runMonthUploader pumps entries from ms.ch into the per-month archive,
+// streamed straight to S3. On normal completion it sends nil on ms.done; on
+// no-change merge it sends archive.ErrNoChanges; on failure it sends the error.
+func (g *GmailBackup) runMonthUploader(ctx context.Context, user, month string, full bool, ms *monthState) {
 	objKey := storage.ObjectKey("gmail", user, fmt.Sprintf("%s.tar.gz", month))
 
-	var archiveData []byte
-	skipUpload := false
-	if !full {
-		existing, downloadErr := g.store.Download(ctx, objKey)
-		if downloadErr == nil {
-			data, appendErr := archive.AppendToArchive(existing, entries)
-			existing.Close()
-			if errors.Is(appendErr, archive.ErrNoChanges) {
-				skipUpload = true
-			} else if appendErr != nil {
-				return 0, fmt.Errorf("appending to archive %s: %w", objKey, appendErr)
-			} else {
-				archiveData = data
-			}
-		} else {
-			data, createErr := archive.Create(entries)
-			if createErr != nil {
-				return 0, fmt.Errorf("creating archive %s: %w", objKey, createErr)
-			}
-			archiveData = data
-		}
-	} else {
-		data, err := archive.Create(entries)
-		if err != nil {
-			return 0, fmt.Errorf("creating archive %s: %w", objKey, err)
-		}
-		archiveData = data
+	// Drain the channel up-front into a slice so we can both pass them to
+	// StreamMerge (which needs all newEntries) and TrackItem them after the
+	// upload completes. One month of messages comfortably fits in memory.
+	for entry := range ms.ch {
+		ms.mu.Lock()
+		ms.entries = append(ms.entries, entry)
+		ms.mu.Unlock()
 	}
 
-	if !skipUpload {
-		if err := g.store.Upload(ctx, objKey, bytes.NewReader(archiveData)); err != nil {
-			return 0, fmt.Errorf("uploading %s: %w", objKey, err)
-		}
+	entries := ms.entries
+	if len(entries) == 0 {
+		ms.done <- nil
+		return
 	}
 
-	if g.progress != nil {
-		fmt.Printf("  \u2191 %s\n", objKey)
-	}
-
-	for _, entry := range entries {
-		if g.metaDB != nil {
-			if err := g.metaDB.TrackItem(&metadata.Item{
-				Service:    "gmail",
-				User:       user,
-				ObjectKey:  objKey,
-				ItemPath:   entry.Name,
-				ItemID:     entryNameToID(entry.Name),
-				Size:       int64(len(entry.Data)),
-				Checksum:   entry.Name,
-				ModifiedAt: entry.ModTime,
-			}); err != nil {
-				return 0, fmt.Errorf("tracking %s: %w", entry.Name, err)
+	uploadErr := streamUpload(ctx, g.store, objKey, func(w io.Writer) error {
+		if !full {
+			existing, downloadErr := g.store.Download(ctx, objKey)
+			if downloadErr == nil {
+				err := archive.StreamMerge(existing, w, entries)
+				existing.Close()
+				return err
 			}
 		}
+		aw := archive.NewWriter(w)
+		for _, e := range entries {
+			if err := aw.Append(e); err != nil {
+				return err
+			}
+		}
+		return aw.Close()
+	})
+
+	if g.progress != nil && uploadErr == nil {
+		fmt.Printf("  ↑ %s\n", objKey)
 	}
-	return len(entries), nil
+	ms.done <- uploadErr
+}
+
+// monthForEntry recovers the YYYY-MM bucket for an entry from its ModTime,
+// used at TrackItem time to compute its object key without re-parsing.
+func monthForEntry(e archive.ArchiveEntry) string {
+	return e.ModTime.Format("2006-01")
 }
 
 func fetchWithRetry(ctx context.Context, svc *gmail.Service, user, id string) (*gmail.Message, error) {
